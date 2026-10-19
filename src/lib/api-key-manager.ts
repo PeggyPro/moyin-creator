@@ -77,6 +77,7 @@ export function classifyModelByName(modelName: string): ModelCapability[] {
   const name = modelName.trim().toLowerCase();
 
   // ---- 视频生成模型 ----
+  if (/^huobao_minimax_h3_reference_turbo_api(?:\.json)?$/.test(name)) return ['video_generation'];
   const videoPatterns = [
     'veo', 'sora', 'wan', 'kling', 'runway', 'luma', 'seedance',
     'cogvideo', 'hunyuan-video', 'minimax-video', 'hailuo', 'pika',

@@ -8,7 +8,8 @@
  * Features: smart endpoint routing, retry with exponential backoff
  */
 
-import { getAuthorizationHeaders, isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from '@/lib/provider-config';
+import { getAuthorizationHeaders, isComfyUIProvider, getComfyUIVideoUnsupportedReason } from '@/lib/provider-config';
+import { generateComfyUIVideo } from '@/lib/ai/comfyui-video';
 import {
   getAllFeatureConfigs,
   getFeatureConfig,
@@ -846,29 +847,28 @@ async function generateViaReplicateImageEndpoint(
 export async function generateFreedomVideo(
   params: FreedomVideoParams
 ): Promise<GenerationResult> {
-  const { config } = resolveFreedomFeatureConfig('freedom_video', 'video_generation', params.model);
-  if (config && isComfyUIProvider(config.provider)) {
-    throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
-  }
-  return freedomRetry(() => _generateFreedomVideoInner(params), 'Video generation', config?.keyManager);
+  const resolved = resolveFreedomFeatureConfig('freedom_video', 'video_generation', params.model);
+  const { config } = resolved;
+  const unsupportedReason = config
+    ? getComfyUIVideoUnsupportedReason(config.provider, params.model || config.model)
+    : undefined;
+  if (unsupportedReason) throw new Error(unsupportedReason);
+  if (config && isComfyUIProvider(config.provider)) return _generateFreedomVideoInner(params, resolved);
+  return freedomRetry(() => _generateFreedomVideoInner(params, resolved), 'Video generation', config?.keyManager);
 }
 
 async function _generateFreedomVideoInner(
-  params: FreedomVideoParams
+  params: FreedomVideoParams,
+  resolved: ReturnType<typeof resolveFreedomFeatureConfig>,
 ): Promise<GenerationResult> {
-  const { config, source: configSource } = resolveFreedomFeatureConfig(
-    'freedom_video',
-    'video_generation',
-    params.model,
-  );
+  const { config, source: configSource } = resolved;
   if (!config) {
     const msg = getFeatureNotConfiguredMessage('video_generation');
     toast.error('自由板块视频生成未配置：请在设置中配置「自由板块-视频」或「视频生成」服务映射');
     throw new Error(msg);
   }
-  if (isComfyUIProvider(config.provider)) {
-    throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
-  }
+  const unsupportedReason = getComfyUIVideoUnsupportedReason(config.provider, params.model || config.model);
+  if (unsupportedReason) throw new Error(unsupportedReason);
   console.log(`[Freedom] Video config source: ${configSource}`);
 
   const { baseUrl, model: defaultModel } = config;
@@ -879,6 +879,39 @@ async function _generateFreedomVideoInner(
   const model = params.model || defaultModel;
   if (!baseUrl?.trim()) throw new Error('请先在设置中配置生成服务地址');
   if (!model?.trim()) throw new Error('请先在设置中配置生成模型');
+
+  if (isComfyUIProvider(config.provider)) {
+    const files = params.uploadFiles || [];
+    const grouped = groupVideoUploadFiles(files);
+    if (grouped.references.length > 0) {
+      throw new Error('当前 ComfyUI 视频工作流仅支持首帧/尾帧，不支持额外参考图');
+    }
+    if ((grouped.single && grouped.first) || files.length !== countVideoUploadFiles(grouped)) {
+      throw new Error('ComfyUI 视频每个首帧/尾帧只能使用一张图片');
+    }
+    if (files.some(file => file.mimeType && !file.mimeType.startsWith('image/'))) {
+      throw new Error('当前 ComfyUI 视频工作流不支持视频或音频参考，请上传图片');
+    }
+    const firstFrame = grouped.first || grouped.single;
+    if (grouped.last && !firstFrame) {
+      throw new Error('请先上传首帧图片，再使用尾帧');
+    }
+    const images: Array<{ url: string; role: 'first_frame' | 'last_frame' }> = [];
+    if (firstFrame) images.push({ url: firstFrame.dataUrl, role: 'first_frame' });
+    if (grouped.last) images.push({ url: grouped.last.dataUrl, role: 'last_frame' });
+    const url = await generateComfyUIVideo({
+      baseUrl,
+      apiKey,
+      model,
+      prompt: params.prompt,
+      aspectRatio: params.aspectRatio,
+      duration: params.duration,
+      videoResolution: params.resolution,
+      images,
+    });
+    const mediaId = saveToMediaLibrary(url, params.prompt, 'ai-video');
+    return { url, mediaId };
+  }
 
   const endpointTypes = useAPIConfigStore.getState().modelEndpointTypes[model];
   const route = detectFreedomVideoRoute(model, endpointTypes);

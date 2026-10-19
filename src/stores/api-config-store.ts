@@ -595,7 +595,7 @@ export const useAPIConfigStore = create<APIConfigStore>()(
           return {
             success: false,
             count: provider.model.length,
-            error: 'ComfyUI 使用原生工作流协议，不支持 /v1/models 同步；已保留手工配置的工作流列表。当前尚未接入 ComfyUI 视频工作流。',
+            error: 'ComfyUI 使用原生工作流协议，不提供 /v1/models；已保留手工配置列表。视频可选择 Wan 2.2 5B 或 MiniMax H3 Reference Turbo 工作流。',
           };
         }
         if (!isProviderConfigured(provider)) {

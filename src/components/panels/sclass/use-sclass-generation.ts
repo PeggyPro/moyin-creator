@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useRef } from "react";
-import { isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from "@/lib/provider-config";
+import { isComfyUIProvider, getComfyUIVideoUnsupportedReason } from "@/lib/provider-config";
 import { toast } from "sonner";
 import {
   useSClassStore,
@@ -101,7 +101,8 @@ export function useSClassGeneration() {
   /** 将 @引用中的图片 URL 转为 HTTP URL */
   const prepareImageUrls = useCallback(
     async (
-      refs: AssetRef[]
+      refs: AssetRef[],
+      nativeComfyUI = false,
     ): Promise<Array<{ url: string; role: "first_frame" | "last_frame" }>> => {
       const imageWithRoles: Array<{
         url: string;
@@ -110,10 +111,15 @@ export function useSClassGeneration() {
 
       for (let i = 0; i < refs.length; i++) {
         const ref = refs[i];
-        const httpUrl = await convertToHttpUrl(ref.localUrl, {
-          fallbackHttpUrl: ref.httpUrl,
-          uploadName: ref.fileName,
-        });
+        const httpUrl = nativeComfyUI
+          ? ref.localUrl || ref.httpUrl || ''
+          : await convertToHttpUrl(ref.localUrl, {
+            fallbackHttpUrl: ref.httpUrl,
+            uploadName: ref.fileName,
+          });
+        if (nativeComfyUI && !httpUrl) {
+          throw new Error(`无法读取参考图片：${ref.fileName || ref.tag}`);
+        }
         if (httpUrl) {
           // 第一张图作为 first_frame，其余作为 last_frame
           imageWithRoles.push({
@@ -203,11 +209,20 @@ export function useSClassGeneration() {
       });
 
       try {
-        if (isComfyUIProvider(featureConfig.provider)) {
-          throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
-        }
+        const unsupportedReason = getComfyUIVideoUnsupportedReason(featureConfig.provider, featureConfig.models?.[0]);
+        if (unsupportedReason) throw new Error(unsupportedReason);
+        const isNativeComfyUI = isComfyUIProvider(featureConfig.provider);
         // 4. 从组内分镜聚合音频/运镜设置
         const isExtendOrEdit = group.generationType === 'extend' || group.generationType === 'edit';
+        if (isNativeComfyUI) {
+          const refs = collectAllRefs(group, groupScenes, characters, scenes);
+          if (isExtendOrEdit || options?.prevVideoUrl || refs.videos.length || refs.audios.length) {
+            throw new Error('当前 ComfyUI 视频工作流不支持视频延长、编辑、视频或音频参考，请移除这些引用后重试');
+          }
+          if (groupScenes.length > 1) {
+            throw new Error('当前 ComfyUI 工作流仅支持单镜头首帧/尾帧，不支持 S 级多镜头格子图参考。请使用单镜头视频生成');
+          }
+        }
         const hasAnyDialogue = groupScenes.some(s => s.audioDialogueEnabled !== false && s.dialogue?.trim());
         const hasAnyAmbient = groupScenes.some(s => s.audioAmbientEnabled !== false);
         const hasAnySfx = groupScenes.some(s => s.audioSfxEnabled !== false);
@@ -311,7 +326,14 @@ export function useSClassGeneration() {
 
         // 5. 收集图片引用 → 转 HTTP URL
         const imageRefs = promptResult.refs.images;
-        const imageWithRoles = await prepareImageUrls(imageRefs);
+        if (isNativeComfyUI && imageRefs.length > 1) {
+          throw new Error('当前 ComfyUI 工作流不支持额外角色或场景参考图，请仅保留单镜头首帧');
+        }
+        const imageWithRoles = await prepareImageUrls(imageRefs, isNativeComfyUI);
+        if (isNativeComfyUI && groupScenes[0]?.needsEndFrame) {
+          const lastFrame = groupScenes[0].endFrameImageUrl || groupScenes[0].endFrameHttpUrl;
+          if (lastFrame) imageWithRoles.push({ url: lastFrame, role: 'last_frame' });
+        }
 
         // 5b. 收集视频/音频引用 → 转 HTTP URL（Seedance 2.0 多模态输入）
         const videoRefUrls: string[] = [];
@@ -353,7 +375,7 @@ export function useSClassGeneration() {
           videoResolution,
         });
 
-        const maxVideoAttempts = Math.max(1, Math.min(keyManager.getTotalKeyCount(), 6));
+        const maxVideoAttempts = isNativeComfyUI ? 1 : Math.max(1, Math.min(keyManager.getTotalKeyCount(), 6));
         let videoUrl: string | null = null;
         let lastVideoError: Error | null = null;
 
@@ -636,15 +658,20 @@ export function useSClassGeneration() {
       });
 
       try {
-        if (isComfyUIProvider(featureConfig.provider)) {
-          throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
-        }
+        const unsupportedReason = getComfyUIVideoUnsupportedReason(featureConfig.provider, featureConfig.models?.[0]);
+        if (unsupportedReason) throw new Error(unsupportedReason);
+        const isNativeComfyUI = isComfyUIProvider(featureConfig.provider);
         // 构建 imageWithRoles
         const firstFrameUrl = scene.imageDataUrl || scene.imageHttpUrl || undefined;
-        const imageWithRoles = await buildImageWithRoles(
-          firstFrameUrl,
-          undefined
-        );
+        const lastFrameUrl = isNativeComfyUI && scene.needsEndFrame
+          ? scene.endFrameImageUrl || scene.endFrameHttpUrl || undefined
+          : undefined;
+        const imageWithRoles: Array<{ url: string; role: 'first_frame' | 'last_frame' }> = isNativeComfyUI
+          ? [
+            ...(firstFrameUrl ? [{ url: firstFrameUrl, role: 'first_frame' as const }] : []),
+            ...(lastFrameUrl ? [{ url: lastFrameUrl, role: 'last_frame' as const }] : []),
+          ]
+          : await buildImageWithRoles(firstFrameUrl, undefined);
 
         const prompt =
           scene.videoPrompt ||
@@ -652,7 +679,7 @@ export function useSClassGeneration() {
           `分镜 ${scene.id + 1} 视频`;
         const duration = Math.max(4, Math.min(15, scene.duration || 5));
 
-        const maxVideoAttempts = Math.max(1, Math.min(keyManager.getTotalKeyCount(), 6));
+        const maxVideoAttempts = isNativeComfyUI ? 1 : Math.max(1, Math.min(keyManager.getTotalKeyCount(), 6));
         let videoUrl: string | null = null;
         let lastVideoError: Error | null = null;
 

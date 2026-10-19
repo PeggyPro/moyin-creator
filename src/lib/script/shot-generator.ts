@@ -6,7 +6,8 @@
  * Generates images and videos for individual shots using AI APIs
  */
 
-import { getAuthorizationHeaders, isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from '@/lib/provider-config';
+import { getAuthorizationHeaders, isComfyUIProvider, getComfyUIVideoUnsupportedReason } from '@/lib/provider-config';
+import { generateComfyUIVideo } from '@/lib/ai/comfyui-video';
 import type { Shot } from "@/types/script";
 import { retryOperation } from "@/lib/utils/retry";
 import { delay, RATE_LIMITS } from "@/lib/utils/rate-limiter";
@@ -237,9 +238,9 @@ export async function generateShotVideo(
   onProgress?: (progress: number) => void
 ): Promise<string> {
   const { apiKey, baseUrl, model, aspectRatio = '16:9', referenceImages = [] } = config;
-  if (isComfyUIProvider({ platform: config.provider || '', baseUrl, model: [model] })) {
-    throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
-  }
+  const provider = { platform: config.provider || '', baseUrl, model: [model] };
+  const unsupportedReason = getComfyUIVideoUnsupportedReason(provider, model);
+  if (unsupportedReason) throw new Error(unsupportedReason);
 
   if (!baseUrl) {
     throw new Error('Base URL is required');
@@ -250,6 +251,23 @@ export async function generateShotVideo(
 
   // Build video prompt
   const prompt = shot.videoPrompt || shot.actionSummary;
+
+  if (isComfyUIProvider(provider)) {
+    if (referenceImages.length > 0) {
+      throw new Error('当前 ComfyUI 视频工作流仅支持首帧/尾帧，不支持额外角色参考图');
+    }
+    return generateComfyUIVideo({
+      apiKey,
+      baseUrl,
+      model,
+      prompt,
+      duration: shot.duration || 5,
+      aspectRatio,
+      videoResolution: config.videoResolution,
+      images: imageUrl ? [{ url: imageUrl, role: 'first_frame' }] : [],
+      onProgress,
+    });
+  }
 
   console.log('[ShotGenerator] Generating video for shot:', shot.id, prompt.substring(0, 100));
 

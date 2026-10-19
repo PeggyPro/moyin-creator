@@ -1,7 +1,8 @@
 // Copyright (c) 2025 hotflow2024
 // Licensed under AGPL-3.0-or-later. See LICENSE for details.
 // Commercial licensing available. See COMMERCIAL_LICENSE.md.
-import { getAuthorizationHeaders, isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from '@/lib/provider-config';
+import { getAuthorizationHeaders, isComfyUIProvider, getComfyUIVideoUnsupportedReason } from '@/lib/provider-config';
+import { generateComfyUIVideo } from '@/lib/ai/comfyui-video';
 import { getFeatureConfig, type FeatureConfig } from "@/lib/ai/feature-router";
 import { uploadToImageHost, isImageHostConfigured } from "@/lib/image-host";
 import { saveVideoToLocal, readImageAsBase64 } from "@/lib/image-storage";
@@ -61,9 +62,8 @@ export function getVideoApiConfig() {
     return null;
   }
   
-  if (isComfyUIProvider(featureConfig.provider)) {
-    throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
-  }
+  const unsupportedReason = getComfyUIVideoUnsupportedReason(featureConfig.provider, featureConfig.models?.[0]);
+  if (unsupportedReason) throw new Error(unsupportedReason);
   const keyManager = featureConfig.keyManager;
   const apiKey = keyManager.getCurrentKey();
   if (apiKey === null) return null;
@@ -444,9 +444,10 @@ export async function callVideoGenerationApi(
   videoConfig?: FeatureConfig,
 ): Promise<string> {
   const featureConfig = videoConfig ?? getFeatureConfig('video_generation');
-  if (featureConfig && isComfyUIProvider(featureConfig.provider)) {
-    throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
-  }
+  const unsupportedReason = featureConfig
+    ? getComfyUIVideoUnsupportedReason(featureConfig.provider, featureConfig.models?.[0])
+    : undefined;
+  if (unsupportedReason) throw new Error(unsupportedReason);
   const resolvedPlatform = platform || featureConfig?.platform;
   if (!resolvedPlatform) {
     throw new Error('请先在设置中配置视频生成服务映射');
@@ -458,6 +459,27 @@ export async function callVideoGenerationApi(
   const videoBaseUrl = featureConfig?.baseUrl?.replace(/\/+$/, '');
   if (!videoBaseUrl) {
     throw new Error('请先在设置中配置视频生成服务映射');
+  }
+
+  if (featureConfig && isComfyUIProvider(featureConfig.provider)) {
+    if (videoRefs?.length || audioRefs?.length) {
+      throw new Error('当前 ComfyUI 视频工作流不支持视频或音频参考，请移除这些引用后重试');
+    }
+    const currentApiKey = keyManager?.getCurrentKey ? keyManager.getCurrentKey() : apiKey;
+    if (currentApiKey === null) throw new Error('No API keys available');
+    return generateComfyUIVideo({
+      baseUrl: videoBaseUrl,
+      apiKey: currentApiKey,
+      model,
+      prompt,
+      duration,
+      aspectRatio,
+      videoResolution,
+      images: imageWithRoles,
+      onProgress,
+      signal,
+      enableAudio,
+    });
   }
 
   // 确保所有输入图片满足视频 API 的最小尺寸要求（如 Seedance ≥ 300px）

@@ -5,7 +5,7 @@
 import { classifyModelByName, parseApiKeys, type IProvider } from '@/lib/api-key-manager';
 import { corsFetch } from '@/lib/cors-fetch';
 import {
-  COMFYUI_VIDEO_UNSUPPORTED_MESSAGE,
+  getComfyUIVideoUnsupportedReason,
   getAuthorizationHeaders,
   isComfyUIProvider,
   isProviderConfigured,
@@ -64,7 +64,7 @@ export async function testProviderConnection(provider: IProvider): Promise<Provi
       return {
         success: true,
         message: 'ComfyUI 服务连接成功',
-        warning: COMFYUI_VIDEO_UNSUPPORTED_MESSAGE,
+        warning: getComfyUIVideoUnsupportedReason(provider),
       };
     }
 

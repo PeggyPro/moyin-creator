@@ -380,6 +380,8 @@ function isModelAllowedByPanelType(
   modelTypes: Record<string, string>,
   modelEndpointTypes: Record<string, string[]>
 ): boolean {
+  // Native workflow capabilities do not come from cloud pricing metadata.
+  if (type === 'video' && /^huobao_(?:minimax_h3_reference_turbo|wan22_5b_t2v_32gb)_api(?:\.json)?$/i.test(modelId)) return true;
   const endpointTypes = modelEndpointTypes[modelId] || [];
   const modelType = modelTypes[modelId];
   if (type === 'image') {

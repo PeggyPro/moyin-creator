@@ -10,9 +10,39 @@
 import { corsFetch } from '@/lib/cors-fetch';
 import { getAuthorizationHeaders } from '@/lib/provider-config';
 import { getFeatureConfig, getFeatureNotConfiguredMessage } from '@/lib/ai/feature-router';
-import { retryOperation } from '@/lib/utils/retry';
+import { isRateLimitError, type RetryOptions } from '@/lib/utils/retry';
 import { resolveImageApiFormat } from '@/lib/api-key-manager';
 import { useAPIConfigStore } from '@/stores/api-config-store';
+import {
+  buildGptImageRequest,
+  extractImageResult,
+  isStandardGptImageModel,
+  throwIfImageRequestAborted,
+  waitForImageRequest,
+} from './openai-image-protocol';
+
+async function retryImageOperation<T>(
+  signal: AbortSignal | undefined,
+  operation: () => Promise<T>,
+  options: RetryOptions = {},
+): Promise<T> {
+  const { maxRetries = 3, baseDelay = 2000, retryOn429 = true, onRetry } = options;
+  for (let attempt = 0; ; attempt++) {
+    throwIfImageRequestAborted(signal);
+    try {
+      const result = await operation();
+      throwIfImageRequestAborted(signal);
+      return result;
+    } catch (error) {
+      throwIfImageRequestAborted(signal);
+      if ((error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name))
+        || !retryOn429 || !isRateLimitError(error) || attempt >= maxRetries) throw error;
+      const delay = baseDelay * Math.pow(2, attempt);
+      onRetry?.(attempt + 1, delay, error as Error);
+      await waitForImageRequest(delay, signal);
+    }
+  }
+}
 
 export interface ImageGenerationParams {
   prompt: string;
@@ -23,6 +53,7 @@ export interface ImageGenerationParams {
   resolution?: '1K' | '2K' | '4K';
   referenceImages?: string[];  // Base64 encoded images
   styleId?: string;
+  signal?: AbortSignal;
 }
 
 export interface ImageGenerationResult {
@@ -207,12 +238,13 @@ async function generateImage(
       params.referenceImages,
       resolution,
       featureConfig.keyManager,
+      params.signal,
     );
   }
 
   // Kling image 原生端点: /kling/v1/images/generations 或 /kling/v1/images/omni-image
   if (apiFormat === 'kling_image') {
-    return submitViaKlingImages(params, model, apiKey, baseUrl, aspectRatio, featureConfig.keyManager);
+    return submitViaKlingImages(params, model, apiKey, baseUrl, aspectRatio, featureConfig.keyManager, params.signal);
   }
 
   // 标准格式: /v1/images/generations (GPT Image, DALL-E, Flux, doubao-seedream 等)
@@ -227,6 +259,9 @@ async function generateImage(
     baseUrl,
     featureConfig.keyManager,
     endpointTypes,
+    params.signal,
+    params.width,
+    params.height,
   );
 
   if (result.imageUrl) {
@@ -234,7 +269,7 @@ async function generateImage(
   }
 
   if (result.taskId) {
-    const imageUrl = await pollTaskStatus(result.taskId, apiKey, baseUrl, undefined, result.pollUrl);
+    const imageUrl = await pollTaskStatus(result.taskId, apiKey, baseUrl, undefined, result.pollUrl, params.signal, featureConfig.keyManager);
     return { imageUrl, taskId: result.taskId };
   }
 
@@ -363,7 +398,7 @@ async function submitViaChatCompletions(
 
   console.log('[ImageGenerator] Submitting via chat completions:', { model, endpoint, isGemini, geminiImageSize: geminiHasImageSize ? normalizeResolutionForGemini(resolution) : 'N/A' });
 
-  const response = await retryOperation(async () => {
+  const response = await retryImageOperation(signal, async () => {
     // 每次重试独立创建 AbortController，避免共享 controller 在重试时已超时
     const controller = new AbortController();
     const timeoutId = setTimeout(
@@ -545,10 +580,20 @@ async function submitImageTask(
   baseUrl?: string,
   keyManager?: { getCurrentKey: () => string | null; handleError: (status: number, errorText?: string) => boolean },
   endpointTypes?: string[],
+  signal?: AbortSignal,
+  width?: number,
+  height?: number,
 ): Promise<{ taskId?: string; imageUrl?: string; pollUrl?: string }> {
   if (!baseUrl) {
     throw new Error('请先在设置中配置图片生成服务映射');
   }
+  throwIfImageRequestAborted(signal);
+  const imagePaths = getImageEndpointPaths(endpointTypes || []);
+  const standardGpt = !!model && isStandardGptImageModel(model) && imagePaths === DEFAULT_IMAGE_ENDPOINT;
+  const gptRequest = standardGpt
+    ? await buildGptImageRequest({ model: model!, prompt, aspectRatio, resolution, width, height, referenceImages, signal })
+    : undefined;
+
   // 根据模型决定 size 格式
   let sizeValue: string = aspectRatio;
   if (model && needsPixelSize(model)) {
@@ -579,24 +624,24 @@ async function submitImageTask(
   });
 
   try {
-    const data = await retryOperation(async () => {
+    const data = await retryImageOperation(signal, async () => {
       // 每次重试独立创建 AbortController，避免共享 controller 在重试时已超时
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000);
-
-      // 每次重试动态取当前 key（利用 keyManager rotate 后的新 key）
-      const currentApiKey = getRequestApiKey(apiKey, keyManager);
-      const imagePaths = getImageEndpointPaths(endpointTypes || []);
+      throwIfImageRequestAborted(signal);
+      const timeoutId = setTimeout(() => controller.abort(new DOMException('图片生成 API 请求超时', 'TimeoutError')), 180000);
+      const onAbort = () => controller.abort(signal?.reason);
+      signal?.addEventListener('abort', onAbort, { once: true });
       const rootBase = getRootBaseUrl(baseUrl);
-      const endpoint = `${rootBase}${imagePaths.submit}`;
+      const endpoint = gptRequest ? buildEndpoint(baseUrl, gptRequest.path) : `${rootBase}${imagePaths.submit}`;
       try {
+        const currentApiKey = getRequestApiKey(apiKey, keyManager);
         const response = await corsFetch(endpoint, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
+            ...(gptRequest?.headers || { 'Content-Type': 'application/json' }),
             ...getAuthorizationHeaders(currentApiKey),
           },
-          body: JSON.stringify(requestData),
+          body: gptRequest?.body || JSON.stringify(requestData),
           signal: controller.signal,
         });
 
@@ -636,6 +681,7 @@ async function submitImageTask(
         }
 
         const text = await response.text();
+        throwIfImageRequestAborted(signal);
         try {
           return JSON.parse(text);
         } catch {
@@ -646,8 +692,13 @@ async function submitImageTask(
           }
           throw new Error(`无法解析图片 API 响应: ${text.substring(0, 100)}`);
         }
+      } catch (error) {
+        throwIfImageRequestAborted(signal);
+        if (controller.signal.aborted) throw controller.signal.reason;
+        throw error;
       } finally {
         clearTimeout(timeoutId);
+        signal?.removeEventListener('abort', onAbort);
       }
     }, {
       maxRetries: 3,
@@ -657,10 +708,13 @@ async function submitImageTask(
         console.warn(`[ImageGenerator] Retryable error, retrying in ${delay}ms... (Attempt ${attempt}/3)`);
       },
     });
-    console.log('[ImageGenerator] API response:', data);
+    throwIfImageRequestAborted(signal);
+    console.log('[ImageGenerator] API response received');
+    const directImage = extractImageResult(data);
+    if (directImage) return { imageUrl: directImage };
 
-    // GPT Image 返回 choices 格式（MemeFast 文档确认）
-    if (data.choices?.[0]?.message?.content) {
+    // 旧中转站 choices 格式兼容。
+    if (typeof data.choices?.[0]?.message?.content === 'string') {
       const content = data.choices[0].message.content;
       // 可能是 markdown 图片链接
       const mdMatch = content.match(/!\[.*?\]\((https?:\/\/[^)]+)\)/);
@@ -695,8 +749,9 @@ async function submitImageTask(
     const pollUrl = `${rootBase}${imagePaths.poll(taskId)}`;
     return { taskId, pollUrl };
   } catch (error) {
+    throwIfImageRequestAborted(signal);
     if (error instanceof Error) {
-      if (error.name === 'AbortError') throw new Error('API 请求超时');
+      if (error.name === 'AbortError') throw error;
       throw error;
     }
     throw new Error('调用图片生成 API 时发生未知错误');
@@ -712,11 +767,14 @@ async function pollTaskStatus(
   baseUrl: string,
   onProgress?: (progress: number) => void,
   customPollUrl?: string,
+  signal?: AbortSignal,
+  keyManager?: { getCurrentKey?: () => string | null },
 ): Promise<string> {
   const maxAttempts = 120;
   const pollInterval = 2000;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    throwIfImageRequestAborted(signal);
     const progress = Math.min(Math.floor((attempt / maxAttempts) * 100), 99);
     onProgress?.(progress);
 
@@ -728,9 +786,10 @@ async function pollTaskStatus(
       const response = await corsFetch(url.toString(), {
         method: 'GET',
         headers: {
-          ...getAuthorizationHeaders(apiKey),
+          ...getAuthorizationHeaders(getRequestApiKey(apiKey, keyManager)),
           'Cache-Control': 'no-cache',
         },
+        signal,
       });
 
       if (!response.ok) {
@@ -739,43 +798,40 @@ async function pollTaskStatus(
       }
 
       const data = await response.json();
-      console.log(`[ImageGenerator] Task ${taskId} status:`, data);
+      throwIfImageRequestAborted(signal);
 
       const status = (data.status ?? data.data?.status ?? 'unknown').toString().toLowerCase();
       const statusMap: Record<string, string> = {
         'pending': 'pending', 'submitted': 'pending', 'queued': 'pending',
         'processing': 'processing', 'running': 'processing', 'in_progress': 'processing',
         'completed': 'completed', 'succeeded': 'completed', 'success': 'completed',
-        'failed': 'failed', 'error': 'failed',
+        'failed': 'failed', 'error': 'failed', 'cancelled': 'failed', 'canceled': 'failed',
       };
       const mappedStatus = statusMap[status] || 'processing';
 
       if (mappedStatus === 'completed') {
         onProgress?.(100);
-        const images = data.result?.images ?? data.data?.result?.images;
-        let resultUrl: string | undefined;
-        if (images?.[0]) {
-          const urlField = images[0].url;
-          resultUrl = Array.isArray(urlField) ? urlField[0] : urlField;
-        }
-        resultUrl = resultUrl || data.output_url || data.result_url || data.url;
+        const resultUrl = extractImageResult(data);
         if (!resultUrl) throw new Error('Task completed but no URL in result');
         return resultUrl;
       }
 
       if (mappedStatus === 'failed') {
         const rawError = data.error || data.error_message || data.data?.error;
-        throw new Error(rawError ? String(rawError) : 'Task failed');
+        const message = typeof rawError === 'string' ? rawError : rawError?.message || JSON.stringify(rawError);
+        throw new Error(`Task failed: ${message || '图片生成失败'}`);
       }
 
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      await waitForImageRequest(pollInterval, signal);
     } catch (error) {
+      throwIfImageRequestAborted(signal);
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       if (error instanceof Error && 
           (error.message.includes('Task failed') || error.message.includes('no URL') || error.message.includes('Task not found'))) {
         throw error;
       }
       console.error(`[ImageGenerator] Poll attempt ${attempt} failed:`, error);
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      await waitForImageRequest(pollInterval, signal);
     }
   }
 
@@ -794,6 +850,8 @@ export async function submitGridImageRequest(params: {
   baseUrl: string;
   aspectRatio: string;
   resolution?: string;
+  width?: number;
+  height?: number;
   referenceImages?: string[];
   /** 可选：传入 keyManager 后，重试时自动用轮换后的新 key */
   keyManager?: { getCurrentKey: () => string | null; handleError: (status: number, errorText?: string) => boolean };
@@ -817,13 +875,21 @@ export async function submitGridImageRequest(params: {
   }
 
   if (apiFormat === 'kling_image') {
-    const result = await submitViaKlingImages({ prompt, aspectRatio, negativePrompt: undefined }, model, apiKey, normalizedBase, aspectRatio, keyManager);
+    const result = await submitViaKlingImages({ prompt, aspectRatio, negativePrompt: undefined }, model, apiKey, normalizedBase, aspectRatio, keyManager, signal);
     return { imageUrl: result.imageUrl, taskId: result.taskId };
   }
 
   // 标准 images/generations 端点（aigc-image / vidu生图 走自定义路径）
   const imagePaths = getImageEndpointPaths(endpointTypes || []);
   const rootBase = getRootBaseUrl(normalizedBase);
+  if (isStandardGptImageModel(model) && imagePaths === DEFAULT_IMAGE_ENDPOINT) {
+    const result = await submitImageTask(prompt, aspectRatio, resolution || '1K', apiKey, referenceImages, model, normalizedBase, keyManager, endpointTypes, signal, params.width, params.height);
+    if (!result.imageUrl && result.taskId) {
+      const imageUrl = await pollTaskStatus(result.taskId, apiKey, normalizedBase, undefined, result.pollUrl, signal, keyManager);
+      return { imageUrl, taskId: result.taskId };
+    }
+    return result;
+  }
   const endpoint = `${rootBase}${imagePaths.submit}`;
   const requestBody: Record<string, unknown> = {
     model,
@@ -840,7 +906,7 @@ export async function submitGridImageRequest(params: {
 
   console.log('[GridImageAPI] Submitting to', endpoint);
 
-  const data = await retryOperation(async () => {
+  const data = await retryImageOperation(signal, async () => {
     // 每次重试动态取当前 key（利用 keyManager rotate 后的新 key）
     const currentApiKey = getRequestApiKey(apiKey, keyManager);
     if (signal?.aborted) throw new Error('用户已取消');
@@ -877,10 +943,13 @@ export async function submitGridImageRequest(params: {
     baseDelay: 3000,
     retryOn429: true,
   });
+  throwIfImageRequestAborted(signal);
   console.log('[GridImageAPI] Response received');
+  const directImage = extractImageResult(data);
+  if (directImage) return { imageUrl: directImage };
 
   // GPT Image 可能通过 images/generations 返回 choices 格式
-  if (data.choices?.[0]?.message?.content) {
+  if (typeof data.choices?.[0]?.message?.content === 'string') {
     const content = data.choices[0].message.content;
     const mdMatch = content.match(/!\[.*?\]\((https?:\/\/[^)]+)\)/);
     if (mdMatch) return { imageUrl: mdMatch[1] };
@@ -917,7 +986,7 @@ export async function submitGridImageRequest(params: {
   if (!imageUrl && taskId) {
     console.log('[GridImageAPI] Got taskId without imageUrl, polling...', taskId);
     const pollUrl = `${rootBase}${imagePaths.poll(taskId)}`;
-    const polledUrl = await pollTaskStatus(taskId, getRequestApiKey(apiKey, params.keyManager), normalizedBase, undefined, pollUrl);
+    const polledUrl = await pollTaskStatus(taskId, apiKey, normalizedBase, undefined, pollUrl, signal, keyManager);
     return { imageUrl: polledUrl, taskId };
   }
 
@@ -942,6 +1011,7 @@ async function submitViaKlingImages(
   baseUrl: string,
   aspectRatio: string,
   keyManager?: { getCurrentKey?: () => string | null; handleError?: (status: number, errorText?: string) => boolean },
+  signal?: AbortSignal,
 ): Promise<ImageGenerationResult> {
   const rootBase = baseUrl.replace(/\/v\d+$/, '');
   const nativePath = model === 'kling-omni-image'
@@ -954,12 +1024,14 @@ async function submitViaKlingImages(
 
   console.log('[ImageGenerator] Kling image →', nativePath, { model });
 
-  const data = await retryOperation(async () => {
+  const data = await retryImageOperation(signal, async () => {
+    throwIfImageRequestAborted(signal);
     const currentApiKey = getRequestApiKey(apiKey, keyManager);
     const response = await corsFetch(`${rootBase}/${nativePath}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getAuthorizationHeaders(currentApiKey) },
       body: JSON.stringify(body),
+      signal,
     });
 
     if (!response.ok) {
@@ -993,10 +1065,11 @@ async function submitViaKlingImages(
   const maxAttempts = 60;
 
   for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(r => setTimeout(r, pollInterval));
+    await waitForImageRequest(pollInterval, signal);
     const currentApiKey = getRequestApiKey(apiKey, keyManager);
     const pollResp = await corsFetch(pollUrl, {
       headers: { ...getAuthorizationHeaders(currentApiKey) },
+      signal,
     });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();
@@ -1018,58 +1091,47 @@ async function submitViaKlingImages(
  * In Electron: saves to local file system and returns local-image:// path
  * In browser: converts to base64
  */
-export async function imageUrlToBase64(url: string): Promise<string> {
-  // If already a local or base64 path, return as-is
-  if (url.startsWith('data:image/') || url.startsWith('local-image://')) {
-    return url;
-  }
-  
-  // Try to use Electron local storage first
-  if (typeof window !== 'undefined' && window.imageStorage) {
-    try {
-      const filename = `image_${Date.now()}.png`;
-      const result = await window.imageStorage.saveImage(url, 'shots', filename);
-      if (result.success && result.localPath) {
-        console.log('[ImageGenerator] Saved image locally:', result.localPath);
-        return result.localPath;
-      }
-    } catch (error) {
-      console.warn('[ImageGenerator] Local save failed, falling back to base64:', error);
-    }
-  }
-  
-  // Fallback to base64 for non-Electron environments
-  const convertBlobToBase64 = (blob: Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
+export async function imageUrlToBase64(url: string, signal?: AbortSignal): Promise<string> {
+  throwIfImageRequestAborted(signal);
+  if (url.startsWith('local-image://')) return url;
+
+  // Download through the same transport as API requests so CORS and cancellation
+  // behave identically in Electron and browser development.
+  let dataUrl = url;
+  if (!url.startsWith('data:image/')) {
+    const response = await corsFetch(url, { signal });
+    if (!response.ok) throw new Error(`图片下载失败: ${response.status}`);
+    const blob = await response.blob();
+    throwIfImageRequestAborted(signal);
+    dataUrl = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = reject;
+      const cleanup = () => signal?.removeEventListener('abort', onAbort);
+      const onAbort = () => {
+        reader.abort();
+        cleanup();
+        reject(new DOMException('用户已取消', 'AbortError'));
+      };
+      reader.onload = () => { cleanup(); resolve(reader.result as string); };
+      reader.onerror = () => { cleanup(); reject(reader.error || new Error('读取图片失败')); };
+      signal?.addEventListener('abort', onAbort, { once: true });
       reader.readAsDataURL(blob);
     });
-  };
-  
-  // Try direct fetch first
-  try {
-    const response = await corsFetch(url, { mode: 'cors' });
-    if (response.ok) {
-      const blob = await response.blob();
-      return await convertBlobToBase64(blob);
-    }
-  } catch (error) {
-    console.warn('[ImageGenerator] Direct fetch failed, trying proxy:', error);
   }
-  
-  // Fallback: use our API proxy to fetch the image
-  try {
-    const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(url)}`;
-    const response = await fetch(proxyUrl);
-    if (!response.ok) {
-      throw new Error(`Proxy fetch failed: ${response.status}`);
+  throwIfImageRequestAborted(signal);
+
+  // Persist GPT Image base64 results too. IPC receives bytes rather than making
+  // another unabortable HTTP download in the main process.
+  if (typeof window !== 'undefined' && window.imageStorage) {
+    try {
+      const extension = dataUrl.startsWith('data:image/jpeg') ? 'jpg' : dataUrl.startsWith('data:image/webp') ? 'webp' : 'png';
+      const result = await window.imageStorage.saveImage(dataUrl, 'shots', `image_${Date.now()}.${extension}`);
+      throwIfImageRequestAborted(signal);
+      if (result.success && result.localPath) return result.localPath;
+    } catch (error) {
+      throwIfImageRequestAborted(signal);
+      console.warn('[ImageGenerator] Local save failed, using base64:', error);
     }
-    const blob = await response.blob();
-    return await convertBlobToBase64(blob);
-  } catch (error) {
-    console.warn('[ImageGenerator] Proxy fetch also failed:', error);
-    throw error;
   }
+  return dataUrl;
 }
+

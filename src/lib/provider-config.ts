@@ -29,7 +29,23 @@ export function getAuthorizationHeaders(apiKey?: string | null): Record<string, 
 }
 
 export const COMFYUI_VIDEO_UNSUPPORTED_MESSAGE =
-  '当前版本尚未接入 ComfyUI 视频工作流，连接成功仅表示服务在线。请通过火宝生成视频，或使用兼容的视频 API。';
+  '尚未接入所选 ComfyUI 工作流。请选择 Wan 2.2 5B 或 MiniMax H3 Reference Turbo 视频工作流。';
+
+export function getComfyUIVideoModelKind(model?: string): 'wan' | 'h3' | undefined {
+  const name = model?.trim().replace(/\.json$/i, '').toLowerCase();
+  if (name === 'huobao_wan22_5b_t2v_32gb_api') return 'wan';
+  if (name === 'huobao_minimax_h3_reference_turbo_api') return 'h3';
+  return undefined;
+}
+
+export function getComfyUIVideoUnsupportedReason(
+  provider: Pick<IProvider, 'platform' | 'baseUrl'> & Partial<Pick<IProvider, 'model'>>,
+  model?: string,
+): string | undefined {
+  if (!isComfyUIProvider(provider)) return undefined;
+  return getComfyUIVideoModelKind(model ?? provider.model?.[0])
+    ? undefined : COMFYUI_VIDEO_UNSUPPORTED_MESSAGE;
+}
 
 /** Recognize native ComfyUI configurations, including the existing Huobao workflow aliases. */
 export function isComfyUIProvider(

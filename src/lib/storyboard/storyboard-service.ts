@@ -8,7 +8,8 @@
  * For Electron desktop app: directly calls external APIs (MemeFast)
  */
 
-import { getAuthorizationHeaders, isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from '@/lib/provider-config';
+import { getAuthorizationHeaders, isComfyUIProvider, getComfyUIVideoUnsupportedReason } from '@/lib/provider-config';
+import { generateComfyUIVideo } from '@/lib/ai/comfyui-video';
 import { buildStoryboardPrompt, getDefaultNegativePrompt, type StoryboardPromptConfig, type CharacterInfo } from './prompt-builder';
 import { calculateGrid, type AspectRatio, type Resolution, RESOLUTION_PRESETS } from './grid-calculator';
 import { retryOperation } from "@/lib/utils/retry";
@@ -675,9 +676,13 @@ export async function generateSceneVideos(
     characterReferenceImages = [],
   } = config;
 
+  const videoProvider = { platform: provider, baseUrl: baseUrl || '', model: model ? [model] : [] };
+  const isNativeComfyUI = isComfyUIProvider(videoProvider);
   if (!mockMode) {
-    if (isComfyUIProvider({ platform: provider, baseUrl: baseUrl || '', model: model ? [model] : [] })) {
-      throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+    const unsupportedReason = getComfyUIVideoUnsupportedReason(videoProvider, model);
+    if (unsupportedReason) throw new Error(unsupportedReason);
+    if (isNativeComfyUI && characterReferenceImages.length > 0) {
+      throw new Error('当前 ComfyUI 视频工作流仅支持首帧/尾帧，不支持额外角色参考图');
     }
     if (!baseUrl?.trim()) throw new Error('请先在设置中配置视频生成服务映射');
     if (!model?.trim()) throw new Error('请先在设置中配置视频生成模型');
@@ -706,6 +711,23 @@ export async function generateSceneVideos(
       }
 
       onSceneProgress?.(scene.id, 10);
+
+      if (isNativeComfyUI) {
+        const videoUrl = await generateComfyUIVideo({
+          baseUrl: baseUrl!,
+          apiKey,
+          model: model!,
+          prompt: scene.videoPrompt,
+          aspectRatio,
+          videoResolution: config.videoResolution,
+          images: scene.imageDataUrl ? [{ url: scene.imageDataUrl, role: 'first_frame' }] : [],
+          onProgress: (progress) => onSceneProgress?.(scene.id, progress),
+        });
+        results.set(scene.id, videoUrl);
+        onSceneProgress?.(scene.id, 100);
+        onSceneComplete?.(scene.id, videoUrl);
+        continue;
+      }
 
       // Submit video generation task directly to external API
       // API supports base64 data URLs directly

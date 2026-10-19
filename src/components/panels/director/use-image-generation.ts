@@ -2,6 +2,8 @@
 // Licensed under AGPL-3.0-or-later. See LICENSE for details.
 // Commercial licensing available. See COMMERCIAL_LICENSE.md.
 import { getAuthorizationHeaders } from '@/lib/provider-config';
+import { corsFetch } from '@/lib/cors-fetch';
+import { extractImageResult, throwIfImageRequestAborted, waitForImageRequest } from '@/lib/ai/openai-image-protocol';
 import { useCharacterLibraryStore } from "@/stores/character-library-store";
 import { getFeatureConfig } from "@/lib/ai/feature-router";
 import { imageUrlToBase64, submitGridImageRequest } from "@/lib/ai/image-generator";
@@ -96,11 +98,11 @@ export async function callImageGenerationApi(
   onProgress?: (progress: number) => void,
   signal?: AbortSignal,
 ): Promise<{ imageUrl: string; httpUrl: string }> {
+  throwIfImageRequestAborted(signal);
   const featureConfig = getImageApiConfig();
   if (!featureConfig) {
     throw new Error('请先在设置中配置图片生成服务映射');
   }
-  const platform = featureConfig.platform;
   const model = featureConfig.models?.[0];
   if (!model) {
     throw new Error('请先在设置中配置图片生成模型');
@@ -123,16 +125,22 @@ export async function callImageGenerationApi(
     aspectRatio,
     referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
     keyManager: imageKeyManager,
+    signal,
   });
+  throwIfImageRequestAborted(signal);
 
   // Direct URL result
   if (apiResult.imageUrl) {
     let finalImageUrl = apiResult.imageUrl;
     try {
-      finalImageUrl = await imageUrlToBase64(apiResult.imageUrl);
+      finalImageUrl = await imageUrlToBase64(apiResult.imageUrl, signal);
     } catch (e) {
+      throwIfImageRequestAborted(signal);
+      if (e instanceof Error && e.name === 'AbortError') throw e;
       console.warn('[ImageGen] Failed to convert to base64:', e);
     }
+    throwIfImageRequestAborted(signal);
+    onProgress?.(100);
     return { imageUrl: finalImageUrl, httpUrl: apiResult.imageUrl };
   }
 
@@ -144,7 +152,7 @@ export async function callImageGenerationApi(
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       // 检查外部中止信号
-      if (signal?.aborted) throw new Error('用户已取消');
+      throwIfImageRequestAborted(signal);
 
       const progress = Math.min(Math.floor((attempt / maxAttempts) * 100), 99);
       onProgress?.(progress);
@@ -152,10 +160,10 @@ export async function callImageGenerationApi(
       const url = new URL(apiResult.pollUrl || `${imageBaseUrl}/v1/tasks/${taskId}`);
       url.searchParams.set('_ts', Date.now().toString());
 
-      const statusResponse = await fetch(url.toString(), {
+      const statusResponse = await corsFetch(url.toString(), {
         method: 'GET',
         headers: {
-          ...getAuthorizationHeaders(apiKeyToUse),
+          ...getAuthorizationHeaders(imageKeyManager.getCurrentKey() ?? apiKeyToUse),
           'Cache-Control': 'no-cache',
         },
         signal,
@@ -167,38 +175,34 @@ export async function callImageGenerationApi(
       }
 
       const statusData = await statusResponse.json();
+      throwIfImageRequestAborted(signal);
       const status = (statusData.status ?? statusData.data?.status ?? 'unknown').toString().toLowerCase();
 
       if (status === 'completed' || status === 'succeeded' || status === 'success') {
-        const images = statusData.result?.images ?? statusData.data?.result?.images;
-        let imageUrl: string | undefined;
-        if (images?.[0]) {
-          const rawUrl = images[0].url || images[0];
-          imageUrl = normalizeUrl(rawUrl);
-        }
-        imageUrl = imageUrl || normalizeUrl(statusData.output_url) || normalizeUrl(statusData.result_url) || normalizeUrl(statusData.url);
+        const imageUrl = extractImageResult(statusData);
 
         if (!imageUrl) throw new Error('任务完成但没有图片 URL');
         
         const httpUrl = imageUrl;
         let finalImageUrl = imageUrl;
         try {
-          finalImageUrl = await imageUrlToBase64(imageUrl);
+          finalImageUrl = await imageUrlToBase64(imageUrl, signal);
         } catch (e) {
+          throwIfImageRequestAborted(signal);
+          if (e instanceof Error && e.name === 'AbortError') throw e;
           console.warn('[ImageGen] Failed to convert to base64:', e);
         }
+        throwIfImageRequestAborted(signal);
+        onProgress?.(100);
         return { imageUrl: finalImageUrl, httpUrl };
       }
 
-      if (status === 'failed' || status === 'error') {
+      if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) {
         const errorMsg = statusData.error || statusData.message || statusData.data?.error || '图片生成失败';
         throw new Error(typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg));
       }
 
-      await new Promise<void>((resolve, reject) => {
-        const tid = setTimeout(resolve, pollInterval);
-        signal?.addEventListener('abort', () => { clearTimeout(tid); reject(new Error('用户已取消')); }, { once: true });
-      });
+      await waitForImageRequest(pollInterval, signal);
     }
     throw new Error('图片生成超时');
   }

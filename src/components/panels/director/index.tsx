@@ -29,7 +29,7 @@ import { useAPIConfigStore } from "@/stores/api-config-store";
 import { useMediaStore } from "@/stores/media-store";
 import { generateStoryboardImage, generateSceneVideos } from "@/lib/storyboard";
 import { getFeatureConfig } from "@/lib/ai/feature-router";
-import { isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from "@/lib/provider-config";
+import { getComfyUIVideoUnsupportedReason } from "@/lib/provider-config";
 import { toast } from "sonner";
 
 export function DirectorView() {
@@ -233,8 +233,9 @@ export function DirectorView() {
       toast.error('请先在设置中配置视频生成 API');
       return;
     }
-    if (isComfyUIProvider(videoConfig.provider)) {
-      toast.error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+    const unsupportedReason = getComfyUIVideoUnsupportedReason(videoConfig.provider, videoConfig.models?.[0]);
+    if (unsupportedReason) {
+      toast.error(unsupportedReason);
       return;
     }
     const apiKey = videoConfig.apiKey;

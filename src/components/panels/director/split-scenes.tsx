@@ -8,7 +8,7 @@
  * 显示分镜切割结果，支持编辑提示词、上传尾帧、选择角色库、添加情绪标签
  */
 
-import { getAuthorizationHeaders, isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from '@/lib/provider-config';
+import { getAuthorizationHeaders, isComfyUIProvider, getComfyUIVideoUnsupportedReason, getComfyUIVideoModelKind } from '@/lib/provider-config';
 import React, { useState, useCallback, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -66,7 +66,7 @@ import { parseApiKeys } from "@/lib/api-key-manager";
 import { getAllFeatureConfigs, getFeatureConfig, getFeatureNotConfiguredMessage } from "@/lib/ai/feature-router";
 import { submitGridImageRequest } from "@/lib/ai/image-generator";
 import { uploadToImageHost, isImageHostConfigured } from "@/lib/image-host";
-import { saveVideoToLocal, readImageAsBase64 } from '@/lib/image-storage';
+import { saveVideoToLocal, saveImageToLocal, readImageAsBase64 } from '@/lib/image-storage';
 import { callVideoGenerationApi, extractLastFrameFromVideo, isContentModerationError } from './use-video-generation';
 import { persistSceneImage } from '@/lib/utils/image-persist';
 import {
@@ -458,9 +458,11 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
   const { getApiKey, getProviderByPlatform, concurrency } = useAPIConfigStore();
   // Inspect mappings without advancing the generation round-robin.
   const videoConfigs = getAllFeatureConfigs('video_generation');
-  const videoUnavailableReason = videoConfigs.length > 0 && videoConfigs.every(config => isComfyUIProvider(config.provider))
-    ? COMFYUI_VIDEO_UNSUPPORTED_MESSAGE
+  const videoUnsupportedReasons = videoConfigs.map(config => getComfyUIVideoUnsupportedReason(config.provider, config.model));
+  const videoUnavailableReason = videoConfigs.length > 0 && videoUnsupportedReasons.every(Boolean)
+    ? videoUnsupportedReasons[0]
     : undefined;
+  const nativeVideoConfigs = videoConfigs.filter(config => isComfyUIProvider(config.provider));
   const { addMediaFromUrl, getOrCreateCategoryFolder } = useMediaStore();
   
   // Get system category folder IDs for auto-saving (images → AI图片, videos → AI视频)
@@ -1484,8 +1486,9 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       toast.error(getFeatureNotConfiguredMessage('video_generation'));
       return;
     }
-    if (isComfyUIProvider(featureConfig.provider)) {
-      toast.error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+    const unsupportedReason = getComfyUIVideoUnsupportedReason(featureConfig.provider, featureConfig.models?.[0]);
+    if (unsupportedReason) {
+      toast.error(unsupportedReason);
       return;
     }
     
@@ -1518,6 +1521,9 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       console.log(`[SplitScenes] Using API key ${keyManager.getTotalKeyCount()} keys, current index available: ${keyManager.getAvailableKeyCount()}`);
     }
 
+    const isNativeComfyUI = isComfyUIProvider(featureConfig.provider);
+    const isNativeWan = isNativeComfyUI && getComfyUIVideoModelKind(model) === 'wan';
+
     setIsGenerating(true);
     setCurrentGeneratingId(sceneId);
 
@@ -1542,7 +1548,7 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       const hasValidHttpUrl = isHttpImageUrl(scene.imageHttpUrl);
       const shouldRefreshFirstFrame = shouldRefreshImageViaCurrentHost(scene.imageDataUrl);
 
-      if (isLocalImageSource(scene.imageDataUrl)) {
+      if (!isNativeComfyUI && isLocalImageSource(scene.imageDataUrl)) {
         if (shouldRefreshFirstFrame) {
           if (hasValidHttpUrl) {
             console.log(
@@ -1576,7 +1582,10 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       // 仅当 needsEndFrame 为 true 时才使用尾帧
       // 如果用户已删除尾帧或关闭了尾帧开关，则不使用尾帧作为视频生成的参考
       let lastFrameUrl: string | null | undefined = null;
-      if (scene.needsEndFrame && (scene.endFrameImageUrl || scene.endFrameHttpUrl)) {
+      if (isNativeWan && scene.needsEndFrame) {
+        toast.info('ComfyUI Wan 工作流仅支持首帧，本次按首帧生成，不使用尾帧参考');
+      }
+      if (!isNativeWan && scene.needsEndFrame && (scene.endFrameImageUrl || scene.endFrameHttpUrl)) {
         const shouldRefreshEndFrame = shouldRefreshImageViaCurrentHost(scene.endFrameImageUrl);
         if (shouldRefreshEndFrame && scene.endFrameImageUrl) {
           lastFrameUrl = scene.endFrameImageUrl;
@@ -1657,6 +1666,8 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
           return '';
         }
         
+        if (isNativeComfyUI) return url;
+
         // Already HTTP URL - use directly
         if (isHttpImageUrl(url)) {
           if (shouldRefreshImageViaCurrentHost(localFallback)) {
@@ -1751,6 +1762,9 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       // So we only use first_frame + optional last_frame for i2v mode
       // Character references are NOT supported in this mode
       if (characterRefs.length > 0) {
+        if (isNativeComfyUI) {
+          toast.info('ComfyUI 视频仅使用首帧/尾帧；角色外观以首帧为准，不会额外传入角色参考图');
+        }
         console.log('[SplitScenes] Skipping', characterRefs.length, 'character refs - cannot mix with first_frame');
       }
 
@@ -1811,7 +1825,12 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
             }
             
             // 持久化到本地文件系统（local-image://），避免 base64 被 partialize 清除
-            const persistResult = await persistSceneImage(lastFrameBase64, sceneId, 'end');
+            const persistResult = isNativeComfyUI
+              ? {
+                localPath: await saveImageToLocal(lastFrameBase64, 'shots', `scene_${sceneId}_end_${Date.now()}.png`),
+                httpUrl: null,
+              }
+              : await persistSceneImage(lastFrameBase64, sceneId, 'end');
             updateSplitSceneEndFrame(sceneId, persistResult.localPath, 'video-extracted', persistResult.httpUrl || undefined);
             console.log('[SplitScenes] Saved video last frame locally:', persistResult.localPath);
           } catch (e) {
@@ -1878,8 +1897,9 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       toast.error(getFeatureNotConfiguredMessage('video_generation'));
       return;
     }
-    if (isComfyUIProvider(featureConfig.provider)) {
-      toast.error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+    const unsupportedReason = getComfyUIVideoUnsupportedReason(featureConfig.provider, featureConfig.models?.[0]);
+    if (unsupportedReason) {
+      toast.error(unsupportedReason);
       return;
     }
 
@@ -3412,6 +3432,16 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
         <div className={cn("rounded-md border p-3 text-xs space-y-1", videoUnavailableReason ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400" : "text-muted-foreground")} role={videoUnavailableReason ? "alert" : "status"}>
           <p>视频服务：{videoConfigs.map(config => `${config.provider.name} / ${config.model}`).join('、')}</p>
           {videoUnavailableReason && <p>{videoUnavailableReason}</p>}
+          {nativeVideoConfigs.map(config => {
+            const kind = getComfyUIVideoModelKind(config.model);
+            if (kind === 'wan') {
+              return <p key={`${config.provider.id}:${config.model}`} className="text-amber-700 dark:text-amber-400">ComfyUI Wan：支持文生视频、首帧图生视频；仅支持首帧，生成时自动忽略尾帧参考。不支持视频或音频参考。</p>;
+            }
+            if (kind === 'h3') {
+              return <p key={`${config.provider.id}:${config.model}`}>ComfyUI H3：支持文生视频、首帧/尾帧图生视频；不支持视频或音频参考。</p>;
+            }
+            return null;
+          })}
         </div>
       )}
 
