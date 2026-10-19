@@ -1,6 +1,7 @@
 // Copyright (c) 2025 hotflow2024
 // Licensed under AGPL-3.0-or-later. See LICENSE for details.
 
+import { withRequestDeadline } from '../src/lib/request-deadline';
 import type { IpcMain } from 'electron';
 import type { ApiFetchRequest, ApiFetchResult } from '../src/types/api-fetch';
 
@@ -20,11 +21,12 @@ export function registerApiFetchHandlers(ipc: IpcMain, fetchImpl: typeof fetch):
         throw new Error('无效或重复的网络请求标识');
       }
       pending.set(key, controller);
+      return await withRequestDeadline(async (signal): Promise<ApiFetchResult> => {
       const response = await fetchImpl(url.href, {
         method: request.method,
         headers: request.headers,
         body: request.body,
-        signal: controller.signal,
+        signal,
       });
       const body = await response.arrayBuffer();
       return {
@@ -34,10 +36,12 @@ export function registerApiFetchHandlers(ipc: IpcMain, fetchImpl: typeof fetch):
         headers: Array.from(response.headers.entries()),
         body,
       };
+      }, { signal: controller.signal });
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
+        timedOut: error instanceof Error && error.name === 'TimeoutError',
         aborted: controller.signal.aborted,
       };
     } finally {

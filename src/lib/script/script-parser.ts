@@ -15,6 +15,7 @@ import { delay, RATE_LIMITS } from "@/lib/utils/rate-limiter";
 import { ApiKeyManager } from "@/lib/api-key-manager";
 import { getModelLimits, parseModelLimitsFromError, cacheDiscoveredLimits, estimateTokens } from "@/lib/ai/model-registry";
 import { corsFetch } from "@/lib/cors-fetch";
+import { withRequestDeadline } from '@/lib/request-deadline';
 
 /**
  * Normalize time value to match scene-store TIME_PRESETS
@@ -192,6 +193,9 @@ interface ParseOptions {
   temperature?: number; // 自定义温度，默认 0.7
   maxTokens?: number; // 自定义最大输出 token 数，默认 4096
   /** 关闭推理模型深度思考（智谱 GLM-4.7/4.5 等），避免 reasoning 耗尽 token */
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxRetries?: number;
   disableThinking?: boolean;
 }
 
@@ -283,7 +287,8 @@ export async function callChatAPI(
   console.log('[callChatAPI] 请求 URL:', url);
 
   // Use retryOperation with key rotation on rate limit
-  return await retryOperation(async () => {
+  let extraRequestUsed = false;
+  return withRequestDeadline(async (signal) => retryOperation(async () => {
     // Get current key from rotation
     const currentKey = keyManager.getCurrentKey();
     if (currentKey === null) {
@@ -319,6 +324,7 @@ export async function callChatAPI(
 
     const response = await corsFetch(url, {
       method: 'POST',
+      signal,
       headers,
       body: JSON.stringify(body),
     });
@@ -338,7 +344,8 @@ export async function callChatAPI(
           cacheDiscoveredLimits(model, discovered);
           
           // 如果发现了 maxOutput 限制且当前请求超出，立即用正确值重试
-          if (discovered.maxOutput && effectiveMaxTokens > discovered.maxOutput) {
+          if (!extraRequestUsed && discovered.maxOutput && effectiveMaxTokens > discovered.maxOutput) {
+            extraRequestUsed = true;
             const correctedMaxTokens = Math.min(requestedMaxTokens, discovered.maxOutput);
             console.warn(
               `[callChatAPI] 🧠 发现 ${model} maxOutput=${discovered.maxOutput}，` +
@@ -347,6 +354,7 @@ export async function callChatAPI(
             const retryBody = { ...body, max_tokens: correctedMaxTokens };
             const retryResp = await corsFetch(url, {
               method: 'POST',
+      signal,
               headers,
               body: JSON.stringify(retryBody),
             });
@@ -410,9 +418,10 @@ export async function callChatAPI(
         const currentMaxTokens = body.max_tokens;
         const newMaxTokens = Math.min(currentMaxTokens * 2, modelLimits.maxOutput);
         
-        if (reasoningTokens > 0 && completionTokens > 0 &&
+        if (!extraRequestUsed && reasoningTokens > 0 && completionTokens > 0 &&
             reasoningTokens / completionTokens > 0.8 &&
             newMaxTokens > currentMaxTokens) {
+          extraRequestUsed = true;
           console.warn(
             `[callChatAPI] 推理模型 token 耗尽 (reasoning: ${reasoningTokens}/${completionTokens})，` +
             `以 max_tokens=${newMaxTokens} 自动重试...`
@@ -421,6 +430,7 @@ export async function callChatAPI(
           const retryBody = { ...body, max_tokens: newMaxTokens };
           const retryResp = await corsFetch(url, {
             method: 'POST',
+      signal,
             headers,
             body: JSON.stringify(retryBody),
           });
@@ -458,7 +468,7 @@ export async function callChatAPI(
     }
 
     return content;
-  }, { maxRetries: 3, baseDelay: 2000 });
+  }, { maxRetries: options.maxRetries ?? 1, baseDelay: 2000, signal }), options);
 }
 
 /**
@@ -903,6 +913,9 @@ const STORYBOARD_STRUCTURE_PROMPT = `
 后者是错误的！会导致生成多个分镜！`;
 
 export interface ScriptGenerationOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxRetries?: number;
   apiKey: string;
   provider: string;
   baseUrl: string;

@@ -7,6 +7,7 @@
  */
 
 export interface RetryOptions {
+  signal?: AbortSignal;
   maxRetries?: number;
   baseDelay?: number;
   retryOn429?: boolean;
@@ -66,20 +67,21 @@ export async function retryOperation<T>(
   operation: () => Promise<T>,
   options: RetryOptions = {}
 ): Promise<T> {
-  const { maxRetries = 3, baseDelay = 2000, retryOn429 = true, onRetry } = options;
+  const { maxRetries = 3, baseDelay = 2000, retryOn429 = true, onRetry, signal } = options;
   
   let lastError: Error | undefined;
 
   // maxRetries 表示"失败后最多重试几次"，首次尝试不计入重试
   // 总共尝试 1 + maxRetries 次
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (signal?.aborted) throw signal.reason;
     try {
       return await operation();
     } catch (error) {
       lastError = error as Error;
 
       // Only retry on rate limit errors (when enabled)
-      if (!retryOn429 || !isRateLimitError(error)) {
+      if (signal?.aborted || lastError?.name === 'AbortError' || lastError?.name === 'TimeoutError' || !retryOn429 || !isRateLimitError(error)) {
         throw error;
       }
 
@@ -95,7 +97,12 @@ export async function retryOperation<T>(
           );
         }
 
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(signal?.reason); };
+          const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, delay);
+          signal?.addEventListener('abort', abort, { once: true });
+          if (signal?.aborted) abort();
+        });
       }
     }
   }

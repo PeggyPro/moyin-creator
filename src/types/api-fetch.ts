@@ -19,6 +19,7 @@ export type ApiFetchResult = {
 } | {
   success: false;
   error: string;
+  timedOut?: boolean;
   aborted: boolean;
 };
 

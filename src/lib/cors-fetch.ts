@@ -6,6 +6,7 @@
  * uses the existing Vite proxy. Browser production requires server-side CORS.
  */
 
+import { withRequestDeadline } from '@/lib/request-deadline';
 import type { ApiFetchBridge } from '@/types/api-fetch';
 
 export async function corsFetch(
@@ -51,9 +52,10 @@ async function fetchThroughBridge(
   body: ArrayBuffer | undefined,
   signal?: AbortSignal | null,
 ): Promise<Response> {
+  return withRequestDeadline(async (boundedSignal) => {
   const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
   const abort = () => bridge.abort(id);
-  signal?.addEventListener('abort', abort, { once: true });
+  boundedSignal.addEventListener('abort', abort, { once: true });
   try {
     const result = await bridge.request({
       id,
@@ -62,7 +64,8 @@ async function fetchThroughBridge(
       headers: Array.from(request.headers.entries()),
       body,
     });
-    if (signal?.aborted || (!result.success && result.aborted)) {
+    if (!result.success && result.timedOut) throw new DOMException(result.error, 'TimeoutError');
+    if (boundedSignal.aborted || (!result.success && result.aborted)) {
       throw new DOMException('请求已取消', 'AbortError');
     }
     if (!result.success) throw new Error(result.error);
@@ -72,6 +75,7 @@ async function fetchThroughBridge(
       headers: result.headers,
     });
   } finally {
-    signal?.removeEventListener('abort', abort);
+    boundedSignal.removeEventListener('abort', abort);
   }
+  }, { signal });
 }

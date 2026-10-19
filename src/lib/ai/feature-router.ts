@@ -229,6 +229,9 @@ export function getFeatureNotConfiguredMessage(feature: AIFeature): string {
 import { callChatAPI } from '@/lib/script/script-parser';
 
 export interface CallFeatureAPIOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxRetries?: number;
   /** 自定义温度，默认 0.7 */
   temperature?: number;
   /** 自定义最大输出 token 数（默认 4096，推理模型建议设置更高） */
@@ -291,6 +294,10 @@ export async function callFeatureAPI(
     maxTokens: options?.maxTokens,
     keyManager: config.keyManager,
     disableThinking,
+    signal: options?.signal,
+    timeoutMs: options?.timeoutMs,
+    // Batched operations own their retry budget; transport does not multiply it.
+    maxRetries: options?.maxRetries ?? 0,
   });
 }
 

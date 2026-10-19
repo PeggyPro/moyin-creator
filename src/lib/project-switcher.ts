@@ -12,6 +12,7 @@
  * to ensure data consistency across stores.
  */
 
+import { flushFileStorage } from '@/lib/indexed-db-storage';
 import { useProjectStore } from '@/stores/project-store';
 import { useScriptStore } from '@/stores/script-store';
 import { useDirectorStore } from '@/stores/director-store';
@@ -44,10 +45,8 @@ export async function switchProject(newProjectId: string): Promise<void> {
 
   console.log(`[ProjectSwitcher] Switching from ${currentId?.substring(0, 8) ?? 'none'} to ${newProjectId.substring(0, 8)}`);
 
-  // 1. Wait briefly for any pending persist writes to complete
-  //    (persist middleware fires setItem synchronously on state change,
-  //     but the actual IPC write is async)
-  await new Promise((r) => setTimeout(r, 50));
+  // Wait for acknowledged writes, not a guessed delay before reading another project.
+  await flushFileStorage();
 
   // 2. Update ONLY the project-store's activeProjectId
   //    This controls which per-project files the storage adapters read/write.

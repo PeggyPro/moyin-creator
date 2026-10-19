@@ -300,14 +300,15 @@ async function executeBatchWithRetry<TItem, TResult>(
 
   for (let attempt = 0; attempt <= MAX_BATCH_RETRIES; attempt++) {
     try {
+      if (apiOptions?.signal?.aborted) throw apiOptions.signal.reason;
       const { system, user } = buildPrompts(batch);
-      const raw = await callFeatureAPI(feature, system, user, apiOptions);
+      const raw = await callFeatureAPI(feature, system, user, { ...apiOptions, maxRetries: 0 });
       return parseResult(raw, batch);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
 
       // TOKEN_BUDGET_EXCEEDED 不重试（输入太大，重试也没用）
-      if ((lastError as any).code === 'TOKEN_BUDGET_EXCEEDED') {
+      if (apiOptions?.signal?.aborted || lastError.name === 'AbortError' || lastError.name === 'TimeoutError' || (lastError as any).code === 'TOKEN_BUDGET_EXCEEDED') {
         throw lastError;
       }
 

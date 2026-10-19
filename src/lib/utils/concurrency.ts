@@ -30,6 +30,7 @@ export async function runStaggered<T>(
   staggerMs: number = 5000
 ): Promise<PromiseSettledResult<T>[]> {
   if (tasks.length === 0) return [];
+  maxConcurrent = Number.isFinite(maxConcurrent) ? Math.max(1, Math.floor(maxConcurrent)) : 1;
 
   const results: PromiseSettledResult<T>[] = new Array(tasks.length);
 

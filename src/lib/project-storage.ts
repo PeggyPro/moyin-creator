@@ -9,7 +9,7 @@
  */
 
 import type { StateStorage } from 'zustand/middleware';
-import { fileStorage } from './indexed-db-storage';
+import { fileStorage, flushFileStorage } from './indexed-db-storage';
 import { useProjectStore } from '@/stores/project-store';
 import { useAppSettingsStore } from '@/stores/app-settings-store';
 
@@ -50,6 +50,36 @@ function getAllProjectIds(): string[] {
 }
 
 // ==================== Project-Scoped Storage ====================
+
+/** Persist every changed entry by its own ID, including inactive background projects. */
+export function createProjectMapStorage(storeName: string): StateStorage {
+  const scoped = createProjectScopedStorage(storeName);
+  const queued = new Map<string, string>();
+  return {
+    ...scoped,
+    setItem: (name, value) => {
+      const parsed = JSON.parse(value);
+      const state = parsed.state;
+      if (!state?.projects) return scoped.setItem(name, value);
+      const writes: Promise<unknown>[] = [];
+      for (const [projectId, projectData] of Object.entries(state.projects)) {
+        const payload = JSON.stringify({
+          state: { activeProjectId: projectId, projectData }, version: parsed.version ?? 0,
+        });
+        if (queued.get(projectId) === payload) continue;
+        queued.set(projectId, payload);
+        const key = `_p/${projectId}/${storeName}`;
+        writes.push(Promise.resolve(fileStorage.setItem(key, payload)).then(async () => {
+          // Failed writes must be retryable even when the snapshot is unchanged.
+          try { await flushFileStorage(key); } catch {
+            if (queued.get(projectId) === payload) queued.delete(projectId);
+          }
+        }));
+      }
+      return Promise.all(writes).then(() => {});
+    },
+  };
+}
 
 /**
  * Creates a StateStorage that routes data to _p/{activeProjectId}/{storeName}.json

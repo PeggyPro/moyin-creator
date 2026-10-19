@@ -59,8 +59,26 @@ const hasRichData = (jsonStr: string | null): boolean => {
   }
 };
 
+const pendingWrites = new Map<string, Promise<void>>();
+const writeErrors = new Map<string, unknown>();
+
+/** Resolve only after queued writes have actually finished; surface failed saves. */
+export async function flushFileStorage(name?: string): Promise<void> {
+  while (true) {
+    const writes = name ? [pendingWrites.get(name)].filter(Boolean) : [...pendingWrites.values()];
+    if (!writes.length) break;
+    await Promise.all(writes);
+  }
+  if (name) {
+    if (writeErrors.has(name)) throw writeErrors.get(name);
+  } else if (writeErrors.size) {
+    throw writeErrors.values().next().value;
+  }
+}
+
 export const fileStorage: StateStorage = {
   getItem: async (name: string): Promise<string | null> => {
+    await flushFileStorage(name);
     console.log(`[Storage] getItem: ${name}, isElectron: ${isElectron()}`);
     if (isElectron()) {
       try {
@@ -124,23 +142,25 @@ export const fileStorage: StateStorage = {
     return localStorage.getItem(name);
   },
 
-  setItem: async (name: string, value: string): Promise<void> => {
-    console.log(`[Storage] setItem: ${name}, size: ${value.length} chars, isElectron: ${isElectron()}`);
-    if (isElectron()) {
-      try {
-        const result = await window.fileStorage!.setItem(name, value);
-        console.log(`[Storage] File save result for ${name}:`, result);
-        return;
-      } catch (error) {
-        console.error('[Storage] File storage setItem error:', error);
+  setItem: (name: string, value: string): Promise<void> => {
+    const previous = pendingWrites.get(name) || Promise.resolve();
+    const write = previous.then(async () => {
+      if (isElectron()) {
+        const saved = await window.fileStorage!.setItem(name, value);
+        if (!saved) throw new Error(`项目保存失败: ${name}`);
+      } else {
+        localStorage.setItem(name, value);
       }
-    }
-    // Fallback to localStorage
-    try {
-      localStorage.setItem(name, value);
-    } catch (error) {
-      console.error('localStorage setItem error:', error);
-    }
+      writeErrors.delete(name);
+    }).catch((error) => {
+      // Zustand does not await persistence. Keep the error for an explicit flush.
+      writeErrors.set(name, error);
+      console.error('[Storage] Save failed:', name, error);
+    }).finally(() => {
+      if (pendingWrites.get(name) === write) pendingWrites.delete(name);
+    });
+    pendingWrites.set(name, write);
+    return write;
   },
 
   removeItem: async (name: string): Promise<void> => {

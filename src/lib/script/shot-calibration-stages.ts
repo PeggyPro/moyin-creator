@@ -60,6 +60,7 @@ export interface GlobalContext {
 }
 
 export interface CalibrationOptions {
+  signal?: AbortSignal;
   styleId?: string;
   cinematographyProfileId?: string;
   promptLanguage?: PromptLanguage;
@@ -157,7 +158,7 @@ export async function calibrateShotsMultiStage(
         return result;
       },
       estimateItemOutputTokens: () => outputTokensPerItem,
-      apiOptions: { maxTokens },
+      apiOptions: { maxTokens, signal: options.signal },
     });
 
     for (const shot of shots) {

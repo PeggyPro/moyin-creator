@@ -1,3 +1,5 @@
+import { commitGeneratedScriptData, commitGeneratedShots } from '@/lib/script/script-merge';
+import { runScriptTask } from '@/lib/script/script-tasks';
 // Copyright (c) 2025 hotflow2024
 // Licensed under AGPL-3.0-or-later. See LICENSE for details.
 // Commercial licensing available. See COMMERCIAL_LICENSE.md.
@@ -52,6 +54,7 @@ export interface ImportResult {
 }
 
 export interface GenerateShotsOptions {
+  signal?: AbortSignal;
   apiKey: string;
   provider: string;
   baseUrl?: string;
@@ -74,8 +77,9 @@ export interface GenerateEpisodeShotsResult {
 export async function importFullScript(
   fullText: string,
   projectId: string,
-  importSettings?: { styleId?: string; promptLanguage?: PromptLanguage }
+  importSettings?: { styleId?: string; promptLanguage?: PromptLanguage; signal?: AbortSignal }
 ): Promise<ImportResult> {
+    return runScriptTask(projectId, 'import:service', async (scriptRun) => {
   try {
     // -1. 预处理：为单行/超长行文本自动插入换行
     const preprocessed = preprocessLineBreaks(fullText);
@@ -83,7 +87,7 @@ export async function importFullScript(
     
     // 0. AI 结构检测（第一步）→ 正则兗底
     let normalizeResult;
-    const aiAnalysis = await analyzeScriptStructureWithAI(processedText);
+    const aiAnalysis = await scriptRun.wait(analyzeScriptStructureWithAI(processedText, scriptRun.signal));
     
     if (aiAnalysis) {
       // AI 检测成功：基于 AI 结果插入标记 + 补全大纲
@@ -149,6 +153,7 @@ export async function importFullScript(
       scriptData,
     };
   } catch (error) {
+      scriptRun.assertCurrent();
     console.error("Import error:", error);
     return {
       success: false,
@@ -158,6 +163,8 @@ export async function importFullScript(
       error: error instanceof Error ? error.message : "导入失败",
     };
   }
+
+    }, importSettings?.signal);
 }
 
 // ==================== 单集结构补全 ====================
@@ -182,6 +189,7 @@ export async function importSingleEpisodeContent(
   episodeIndex: number,
   projectId: string,
 ): Promise<SingleEpisodeImportResult> {
+    return runScriptTask(projectId, 'structure:service', async (scriptRun) => {
   const TAG = '[importSingleEpisodeContent]';
 
   try {
@@ -218,6 +226,7 @@ export async function importSingleEpisodeContent(
       '黄昏': 'dusk', '黎明': 'dawn', '清晨': 'dawn', '傍晚': 'dusk',
     };
     const newScenes = rawScenes.map((scene, idx) => {
+      scriptRun.assertCurrent();
       const sceneId = `scene_ep${episodeIndex}_${timestamp}_${idx + 1}`;
       const headerParts = scene.sceneHeader.split(/\s+/);
       const timeOfDay = headerParts[1] || '日';
@@ -272,11 +281,13 @@ export async function importSingleEpisodeContent(
 
     // === 4. 轻量 AI 标题+大纲（后台不阻塞） ===
     generateSingleEpisodeTitleAndSynopsis(projectId, episodeIndex).catch(e => {
+      scriptRun.assertCurrent();
       console.warn(`${TAG} 标题/大纲生成失败（不影响结构补全）:`, e);
     });
 
     return { success: true, sceneCount: newScenes.length };
   } catch (error) {
+      scriptRun.assertCurrent();
     console.error('[importSingleEpisodeContent] Error:', error);
     return {
       success: false,
@@ -284,6 +295,8 @@ export async function importSingleEpisodeContent(
       error: error instanceof Error ? error.message : '结构补全失败',
     };
   }
+
+    });
 }
 
 /**
@@ -293,6 +306,7 @@ async function generateSingleEpisodeTitleAndSynopsis(
   projectId: string,
   episodeIndex: number,
 ): Promise<void> {
+  return runScriptTask(projectId, `titles:episode:${episodeIndex}`, async (scriptRun) => {
   const store = useScriptStore.getState();
   const project = store.projects[projectId];
   if (!project) return;
@@ -324,11 +338,13 @@ ${background?.era ? `时代：${background.era}` : ''}
   const user = `第${episodeIndex}集内容：\n${contentSummary}`;
 
   try {
-    const result = await callFeatureAPI('script_analysis', system, user, {
+    const result = await callFeatureAPI('script_analysis', system, user, {signal: scriptRun.signal, 
       temperature: 0.3,
       maxTokens: 512,
     });
-    if (!result) return;
+    scriptRun.assertCurrent();
+    const currentRaw = useScriptStore.getState().projects[projectId]?.episodeRawScripts.find(e => e.episodeIndex === episodeIndex);
+    if (!currentRaw || currentRaw.rawContent !== epRaw.rawContent || !result) return;
 
     const jsonMatch = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').match(/\{[\s\S]*\}/);
     if (!jsonMatch) return;
@@ -336,7 +352,7 @@ ${background?.era ? `时代：${background.era}` : ''}
     const parsed = JSON.parse(jsonMatch[0]);
     const updates: Partial<EpisodeRawScript> = {};
 
-    if (!hasTitle && parsed.title) {
+    if (!hasTitle && currentRaw.title === epRaw.title && parsed.title) {
       const fullTitle = `第${episodeIndex}集：${parsed.title}`;
       updates.title = fullTitle;
       // 同步到 scriptData.episodes
@@ -352,7 +368,7 @@ ${background?.era ? `时代：${background.era}` : ''}
       }
     }
 
-    if (!hasSynopsis && parsed.synopsis) {
+    if (!hasSynopsis && currentRaw.synopsis === epRaw.synopsis && parsed.synopsis) {
       updates.synopsis = parsed.synopsis;
       updates.keyEvents = parsed.keyEvents || [];
       updates.synopsisGeneratedAt = Date.now();
@@ -363,8 +379,10 @@ ${background?.era ? `时代：${background.era}` : ''}
       console.log(`[generateSingleEpisodeTitleAndSynopsis] 第${episodeIndex}集标题/大纲已生成`);
     }
   } catch (e) {
+    scriptRun.assertCurrent();
     console.warn('[generateSingleEpisodeTitleAndSynopsis] AI 调用失败:', e);
   }
+  });
 }
 
 /**
@@ -379,6 +397,7 @@ export async function generateEpisodeShots(
   options: GenerateShotsOptions,
   onProgress?: (message: string) => void
 ): Promise<GenerateEpisodeShotsResult> {
+    return runScriptTask(projectId, `episode-shots:${episodeIndex}`, async (scriptRun) => {
   const store = useScriptStore.getState();
   const project = store.projects[projectId];
   
@@ -419,6 +438,7 @@ export async function generateEpisodeShots(
     
     // 构建场景内容用于分镜生成
     const scenesWithContent = episodeScenes.map((scene, idx) => {
+      scriptRun.assertCurrent();
       const rawScene = episodeScript.scenes[idx];
       return {
         ...scene,
@@ -430,14 +450,14 @@ export async function generateEpisodeShots(
     });
     
     // 生成分镜
-    const newShots = await generateShotsForEpisode(
+    const newShots = await scriptRun.wait(generateShotsForEpisode(
       scenesWithContent,
       episodeIndex,
       episode.id,
       scriptData.characters,
       options,
       onProgress
-    );
+    ));
     
     // 更新现有分镜（移除该集旧分镜，添加新分镜）
     const existingShots = project.shots.filter(
@@ -445,7 +465,7 @@ export async function generateEpisodeShots(
     );
     const allShots = [...existingShots, ...newShots];
     
-    store.setShots(projectId, allShots);
+    commitGeneratedShots(projectId, project.shots, allShots);
     
     // === AI 视角分析（分镜生成后自动执行）===
     let viewpointAnalyzed = false;
@@ -514,6 +534,7 @@ export async function generateEpisodeShots(
         
         // 处理单个场景的函数
         const processScene = async (taskIndex: number) => {
+      scriptRun.assertCurrent();
           const task = sceneAnalysisTasks[taskIndex];
           const { scene, index: i, sceneShots } = task;
           
@@ -522,7 +543,7 @@ export async function generateEpisodeShots(
           onProgress?.(`AI 分析场景 ${i + 1}/${episodeScenes.length}: ${scene.location}...`);
           
           console.log(`[generateEpisodeShots] 🔄 调用 analyzeSceneViewpoints for "${scene.location}"...`);
-          const result = await analyzeSceneViewpoints(scene, sceneShots, viewpointOptions);
+          const result = await scriptRun.wait(analyzeSceneViewpoints(scene, sceneShots, { ...viewpointOptions, signal: scriptRun.signal }));
           console.log(`[generateEpisodeShots] ✅ AI 分析完成，返回 ${result.viewpoints.length} 个视角:`, 
             result.viewpoints.map(v => v.name).join(', '));
           console.log(`[generateEpisodeShots] 📝 analysisNote: ${result.analysisNote}`);
@@ -531,14 +552,15 @@ export async function generateEpisodeShots(
         };
         
         // 错开启动的并发控制：每5秒启动一个新任务，同时最多 concurrency 个
-        const settledResults = await runStaggered(
+        const settledResults = await scriptRun.wait(runStaggered(
           sceneAnalysisTasks.map((_, taskIndex) => async () => {
+      scriptRun.assertCurrent();
             console.log(`[generateEpisodeShots] 🚀 启动场景 ${taskIndex + 1}/${sceneAnalysisTasks.length}`);
-            return await processScene(taskIndex);
+            return await scriptRun.wait(processScene(taskIndex));
           }),
           concurrency,
           5000
-        );
+        ));
         
         // 处理所有结果
         for (const settledResult of settledResults) {
@@ -634,12 +656,13 @@ export async function generateEpisodeShots(
         console.log('[generateEpisodeShots] 📦 保存 AI 视角到 scriptData.scenes...');
         console.log('[generateEpisodeShots] updatedScenes 中有视角的场景:');
         updatedScenes.forEach(s => {
+      scriptRun.assertCurrent();
           if (s.viewpoints && s.viewpoints.length > 0) {
             console.log(`  - ${s.location}: ${s.viewpoints.length} 个视角 [${s.viewpoints.map((v: any) => v.name).join(', ')}]`);
           }
         });
         
-        store.setScriptData(projectId, {
+        commitGeneratedScriptData(projectId, scriptData, {
           ...scriptData,
           scenes: updatedScenes,
         });
@@ -648,13 +671,17 @@ export async function generateEpisodeShots(
         console.log('[generateEpisodeShots] 总计 AI 分析视角数:', viewpointCount);
         console.log('============================================\n');
         
-        viewpointAnalyzed = analysisExecuted;
+        viewpointAnalyzed = analysisExecuted && settledResults.every(result => result.status === 'fulfilled');
+        if (analysisExecuted && !viewpointAnalyzed) {
+          viewpointSkippedReason = '部分场景视角分析失败，成功结果已保留，请重试未完成的场景';
+        }
         if (!analysisExecuted) {
           viewpointSkippedReason = '无分镜';
         }
         
         onProgress?.(`AI 视角分析完成（${viewpointCount} 个视角）`);
       } catch (e) {
+      scriptRun.assertCurrent();
         const err = e as Error;
         console.error('\n============================================');
         console.error('[generateEpisodeShots] ❌ AI 视角分析失败:', err);
@@ -676,11 +703,14 @@ export async function generateEpisodeShots(
     
     return { shots: newShots, viewpointAnalyzed, viewpointSkippedReason };
   } catch (error) {
+      scriptRun.assertCurrent();
     store.updateEpisodeRawScript(projectId, episodeIndex, {
       shotGenerationStatus: 'error',
     });
     throw error;
   }
+
+    }, options.signal);
 }
 
 /**
@@ -981,6 +1011,7 @@ export async function regenerateAllEpisodeShots(
   options: GenerateShotsOptions,
   onProgress?: (current: number, total: number, message: string) => void
 ): Promise<void> {
+    return runScriptTask(projectId, 'shots:service', async (scriptRun) => {
   const store = useScriptStore.getState();
   const project = store.projects[projectId];
   
@@ -994,13 +1025,15 @@ export async function regenerateAllEpisodeShots(
     const ep = project.episodeRawScripts[i];
     onProgress?.(i + 1, totalEpisodes, `正在生成第 ${ep.episodeIndex} 集...`);
     
-    await generateEpisodeShots(
+    await scriptRun.wait(generateEpisodeShots(
       ep.episodeIndex,
       projectId,
-      options,
+      { ...options, signal: scriptRun.signal },
       (msg) => onProgress?.(i + 1, totalEpisodes, msg)
-    );
+    ));
   }
+
+    }, options.signal);
 }
 
 /**
@@ -1034,6 +1067,10 @@ export function getEpisodeGenerationSummary(projectId: string): {
 
 // CalibrationOptions 已不需要，统一从服务映射获取配置
 export interface CalibrationOptions {
+  signal?: AbortSignal;
+  apiKey?: string;
+  provider?: string;
+  baseUrl?: string;
   // 保留空接口以保持兼容性
 }
 
@@ -1115,6 +1152,7 @@ export async function calibrateEpisodeTitles(
   _options?: CalibrationOptions, // 不再需要，保留以兼容
   onProgress?: (current: number, total: number, message: string) => void
 ): Promise<CalibrationResult> {
+    return runScriptTask(projectId, 'titles:service', async (scriptRun) => {
   const store = useScriptStore.getState();
   const project = store.projects[projectId];
   
@@ -1152,10 +1190,11 @@ export async function calibrateEpisodeTitles(
       contentSummary: extractEpisodeSummary(ep),
     }));
     
-    const { results, failedBatches, totalBatches } = await processBatched<TitleItem, string>({
+    const { results, failedBatches, totalBatches } = await scriptRun.wait(processBatched<TitleItem, string>({apiOptions: { signal: scriptRun.signal }, 
       items,
       feature: 'script_analysis',
       buildPrompts: (batch) => {
+      scriptRun.assertCurrent();
         const { title, outline, characterBios, totalEpisodes } = globalContext;
         const system = `你是好莱坞资深编剧，拥有艾美奖最佳编剧提名经历。
 
@@ -1196,6 +1235,7 @@ ${characterBios.slice(0, 1000)}
         return { system, user };
       },
       parseResult: (raw) => {
+      scriptRun.assertCurrent();
         let cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
         const parsed = JSON.parse(cleaned);
         const result = new Map<string, string>();
@@ -1208,26 +1248,27 @@ ${characterBios.slice(0, 1000)}
       },
       estimateItemOutputTokens: () => 30, // 标题很短，每集约 30 tokens
       onProgress: (completed, total, message) => {
+      scriptRun.assertCurrent();
         onProgress?.(completed, total, `[标题校准] ${message}`);
       },
-    });
+    }));
     
     // 处理结果
     let calibratedCount = 0;
     for (const ep of missingEpisodes) {
       const newTitle = results.get(String(ep.episodeIndex));
       if (newTitle) {
-        store.updateEpisodeRawScript(projectId, ep.episodeIndex, {
-          title: `第${ep.episodeIndex}集：${newTitle}`,
-        });
-        
-        const scriptData = store.projects[projectId]?.scriptData;
-        if (scriptData) {
-          const epData = scriptData.episodes.find(e => e.index === ep.episodeIndex);
-          if (epData) {
-            epData.title = `第${ep.episodeIndex}集：${newTitle}`;
-            store.setScriptData(projectId, { ...scriptData });
-          }
+        const current = useScriptStore.getState().projects[projectId];
+        const currentRaw = current?.episodeRawScripts.find(item => item.episodeIndex === ep.episodeIndex);
+        if (!currentRaw || currentRaw.title !== ep.title) continue;
+        const title = `第${ep.episodeIndex}集：${newTitle}`;
+        store.updateEpisodeRawScript(projectId, ep.episodeIndex, { title });
+        const baseline = project.scriptData;
+        if (baseline) {
+          commitGeneratedScriptData(projectId, baseline, {
+            ...baseline,
+            episodes: baseline.episodes.map(item => item.index === ep.episodeIndex ? { ...item, title } : item),
+          });
         }
         
         calibratedCount++;
@@ -1241,11 +1282,13 @@ ${characterBios.slice(0, 1000)}
     onProgress?.(calibratedCount, totalMissing, `已校准 ${calibratedCount}/${totalMissing} 集`);
     
     return {
-      success: true,
+      success: calibratedCount === totalMissing && failedBatches === 0,
+      error: calibratedCount === totalMissing && failedBatches === 0 ? undefined : `标题校准仅完成 ${calibratedCount}/${totalMissing} 集，成功结果已保留，可重试缺失项`,
       calibratedCount,
       totalMissing,
     };
   } catch (error) {
+      scriptRun.assertCurrent();
     console.error('[calibrate] Error:', error);
     return {
       success: false,
@@ -1254,11 +1297,14 @@ ${characterBios.slice(0, 1000)}
       error: error instanceof Error ? error.message : '校准失败',
     };
   }
+
+    }, _options?.signal);
 }
 
 // ==================== AI 分镜校准功能 ====================
 
 export interface ShotCalibrationOptions {
+  signal?: AbortSignal;
   apiKey: string;
   provider: string;
   baseUrl?: string;
@@ -1336,6 +1382,7 @@ export async function calibrateEpisodeShots(
   onProgress?: (current: number, total: number, message: string) => void,
   filterSceneId?: string,
 ): Promise<ShotCalibrationResult> {
+    return runScriptTask(projectId, `shot-calibration:${episodeIndex}`, async (scriptRun) => {
   const store = useScriptStore.getState();
   const project = store.projects[projectId];
   
@@ -1421,6 +1468,7 @@ export async function calibrateEpisodeShots(
       
       // 准备批次数据
       const batchData = batch.map(shot => {
+      scriptRun.assertCurrent();
         const scene = scriptData.scenes.find(s => s.id === shot.sceneRefId);
         let sourceText = shot.actionSummary || '';
         if (shot.dialogue) {
@@ -1462,31 +1510,34 @@ export async function calibrateEpisodeShots(
     
     // 错开启动的并发控制：每5秒启动一个新批次，同时最多 concurrency 个
     let completedBatches = 0;
-    const settledBatchResults = await runStaggered(
+    const settledBatchResults = await scriptRun.wait(runStaggered(
       allBatches.map(({ batch, batchNum, batchData }) => async () => {
+      scriptRun.assertCurrent();
         console.log(`[calibrateShots] 🚀 启动批次 ${batchNum}/${totalBatches}`);
         onProgress?.(calibratedCount, totalShots, `🚀 处理批次 ${batchNum}/${totalBatches}...`);
         
         // 带重试机制的 AI 调用
         let calibrations: Record<string, any> = {};
         let retryCount = 0;
-        const maxRetries = 3;
+        const maxRetries = 1; // processBatched owns the bounded request retries.
         
         while (retryCount < maxRetries) {
           try {
-            calibrations = await calibrateShotsMultiStage(
+            calibrations = await scriptRun.wait(calibrateShotsMultiStage(
               batchData,
-              { styleId: options.styleId, cinematographyProfileId: options.cinematographyProfileId, promptLanguage: options.promptLanguage },
+              {signal: scriptRun.signal,  styleId: options.styleId, cinematographyProfileId: options.cinematographyProfileId, promptLanguage: options.promptLanguage },
               globalContext,
               (stage, total, name) => {
+      scriptRun.assertCurrent();
                 console.log(`[calibrateShots] 批次 ${batchNum}/${totalBatches} - Stage ${stage}/${total}: ${name}`);
                 onProgress?.(calibratedCount, totalShots, `批次 ${batchNum} Stage ${stage}/${total}: ${name}`);
               }
-            );
+            ));
             completedBatches++;
             console.log(`[calibrateShots] ✅ 批次 ${batchNum} 完成，进度: ${completedBatches}/${totalBatches}`);
             return { batch, calibrations, success: true as const };
           } catch (err) {
+      scriptRun.assertCurrent();
             retryCount++;
             console.warn(`[calibrateShots] 批次 ${batchNum} 失败，重试 ${retryCount}/${maxRetries}:`, err);
             if (retryCount >= maxRetries) {
@@ -1494,7 +1545,7 @@ export async function calibrateEpisodeShots(
               completedBatches++;
               return { batch, calibrations: {} as Record<string, any>, success: false as const };
             }
-            await new Promise(r => setTimeout(r, 2000 * retryCount));
+            await scriptRun.wait(new Promise(r => setTimeout(r, 2000 * retryCount)));
           }
         }
         completedBatches++;
@@ -1502,7 +1553,7 @@ export async function calibrateEpisodeShots(
       }),
       concurrency,
       5000
-    );
+    ));
     const results = settledBatchResults
       .filter((r): r is { status: 'fulfilled'; value: any } => r.status === 'fulfilled')
       .map(r => r.value);
@@ -1569,14 +1620,16 @@ export async function calibrateEpisodeShots(
     onProgress?.(calibratedCount, totalShots, `已校准 ${calibratedCount}/${totalShots} 个分镜`);
     
     // 保存更新后的分镜
-    store.setShots(projectId, updatedShots);
+    commitGeneratedShots(projectId, project.shots, updatedShots);
     
     return {
-      success: true,
+      success: calibratedCount === totalShots,
+      error: calibratedCount === totalShots ? undefined : `分镜校准仅完成 ${calibratedCount}/${totalShots} 个，成功结果已保留，请重试`,
       calibratedCount,
       totalShots,
     };
   } catch (error) {
+      scriptRun.assertCurrent();
     console.error('[calibrateShots] Error:', error);
     return {
       success: false,
@@ -1585,6 +1638,8 @@ export async function calibrateEpisodeShots(
       error: error instanceof Error ? error.message : '分镜校准失败',
     };
   }
+
+    }, options.signal);
 }
 
 /**
@@ -1596,6 +1651,7 @@ export async function calibrateSingleShot(
   options: ShotCalibrationOptions,
   onProgress?: (message: string) => void
 ): Promise<ShotCalibrationResult> {
+    return runScriptTask(projectId, `single-shot:${shotId}`, async (scriptRun) => {
   const store = useScriptStore.getState();
   const project = store.projects[projectId];
   
@@ -1682,7 +1738,7 @@ export async function calibrateSingleShot(
     }];
     
     // 调用 AI 校准
-    const calibrations = await callAIForShotCalibration(shotData, options, globalContext);
+    const calibrations = await scriptRun.wait(callAIForShotCalibration(shotData, { ...options, signal: scriptRun.signal }, globalContext));
     const calibration = calibrations[shot.id];
     
     if (!calibration) {
@@ -1691,6 +1747,7 @@ export async function calibrateSingleShot(
     
     // 更新分镜
     const updatedShots = project.shots.map(s => {
+      scriptRun.assertCurrent();
       if (s.id !== shot.id) return s;
       return {
         ...s,
@@ -1738,7 +1795,7 @@ export async function calibrateSingleShot(
       } as Shot;
     });
     
-    store.setShots(projectId, updatedShots);
+    commitGeneratedShots(projectId, project.shots, updatedShots);
     onProgress?.(`分镜校准完成`);
     
     return {
@@ -1747,6 +1804,7 @@ export async function calibrateSingleShot(
       totalShots: 1,
     };
   } catch (error) {
+      scriptRun.assertCurrent();
     console.error('[calibrateSingleShot] Error:', error);
     return {
       success: false,
@@ -1755,6 +1813,8 @@ export async function calibrateSingleShot(
       error: error instanceof Error ? error.message : '单个分镜校准失败',
     };
   }
+
+    }, options.signal);
 }
 
 /**
@@ -2192,7 +2252,7 @@ ${sourceText}
 ${shotDescriptions}`;
   
   // 统一从服务映射获取配置（单个分镜校准用更大 token 预算）
-  const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt, { maxTokens: 16384 });
+  const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt, {signal: options.signal,  maxTokens: 16384 });
   
   // 解析 JSON 结果（增强版）
   try {
@@ -2264,6 +2324,7 @@ export async function generateEpisodeSynopses(
   _options?: CalibrationOptions, // 不再需要，保留以兼容
   onProgress?: (current: number, total: number, message: string) => void
 ): Promise<SynopsisGenerationResult> {
+    return runScriptTask(projectId, 'synopsis:service', async (scriptRun) => {
   const store = useScriptStore.getState();
   const project = store.projects[projectId];
   
@@ -2306,10 +2367,11 @@ export async function generateEpisodeSynopses(
       contentSummary: extractEpisodeSummary(ep),
     }));
     
-    const { results, failedBatches, totalBatches } = await processBatched<SynopsisItem, SynopsisResult>({
+    const { results, failedBatches, totalBatches } = await scriptRun.wait(processBatched<SynopsisItem, SynopsisResult>({apiOptions: { signal: scriptRun.signal }, 
       items,
       feature: 'script_analysis',
       buildPrompts: (batch) => {
+      scriptRun.assertCurrent();
         const { title, genre, era, worldSetting, themes, outline, characterBios, totalEpisodes: total } = globalContext;
         const system = `你是好莱坞资深剧本医生(Script Doctor)，擅长分析剧本结构和叙事节奏。
 
@@ -2360,6 +2422,7 @@ ${characterBios.slice(0, 800)}
         return { system, user };
       },
       parseResult: (raw) => {
+      scriptRun.assertCurrent();
         let cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
         const parsed = JSON.parse(cleaned);
         const result = new Map<string, SynopsisResult>();
@@ -2376,15 +2439,18 @@ ${characterBios.slice(0, 800)}
       },
       estimateItemOutputTokens: () => 200, // 大纲 + keyEvents 约 200 tokens
       onProgress: (completed, total, message) => {
+      scriptRun.assertCurrent();
         onProgress?.(completed, total, `[大纲生成] ${message}`);
       },
-    });
+    }));
     
     // 处理结果
     let generatedCount = 0;
     for (const ep of episodes) {
       const res = results.get(String(ep.episodeIndex));
       if (res) {
+        const current = useScriptStore.getState().projects[projectId]?.episodeRawScripts.find(item => item.episodeIndex === ep.episodeIndex);
+        if (!current || current.rawContent !== ep.rawContent || current.synopsis !== ep.synopsis || JSON.stringify(current.keyEvents) !== JSON.stringify(ep.keyEvents)) continue;
         store.updateEpisodeRawScript(projectId, ep.episodeIndex, {
           synopsis: res.synopsis,
           keyEvents: res.keyEvents,
@@ -2406,11 +2472,13 @@ ${characterBios.slice(0, 800)}
     console.log('[generateSynopses] 元数据已更新，包含新生成的大纲');
     
     return {
-      success: true,
+      success: generatedCount === totalEpisodes && failedBatches === 0,
+      error: generatedCount === totalEpisodes && failedBatches === 0 ? undefined : `大纲仅完成 ${generatedCount}/${totalEpisodes} 集，成功结果已保留，可重试缺失项`,
       generatedCount,
       totalEpisodes,
     };
   } catch (error) {
+      scriptRun.assertCurrent();
     console.error('[generateSynopses] Error:', error);
     return {
       success: false,
@@ -2419,6 +2487,8 @@ ${characterBios.slice(0, 800)}
       error: error instanceof Error ? error.message : '大纲生成失败',
     };
   }
+
+    }, _options?.signal);
 }
 
 // ==================== 导出项目元数据 MD ====================

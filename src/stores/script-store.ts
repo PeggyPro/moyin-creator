@@ -1,9 +1,10 @@
-﻿// Copyright (c) 2025 hotflow2024
+// Copyright (c) 2025 hotflow2024
 // Licensed under AGPL-3.0-or-later. See LICENSE for details.
 // Commercial licensing available. See COMMERCIAL_LICENSE.md.
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import { createProjectScopedStorage } from "@/lib/project-storage";
+import { createProjectMapStorage } from "@/lib/project-storage";
+import { cancelScriptTasks, hasLiveScriptTask, onScriptTasksSettled } from "@/lib/script/script-tasks";
 import type { ScriptData, Shot, Episode, ScriptScene, ScriptCharacter, EpisodeRawScript, ProjectBackground, PromptLanguage, CalibrationStrictness, FilteredCharacterRecord, SeriesMeta } from "@/types/script";
 
 export type ParseStatus = "idle" | "parsing" | "ready" | "error";
@@ -82,7 +83,8 @@ export interface ScriptProjectData {
   promptLanguage: PromptLanguage;               // 鎻愮ず璇嶈瑷€閫夐」锛堥粯璁や粎涓枃锛?
   calibrationStrictness: CalibrationStrictness;  // AI瑙掕壊鏍″噯涓ユ牸搴?
   lastFilteredCharacters: FilteredCharacterRecord[];  // 涓婃鏍″噯琚繃婊ょ殑瑙掕壊锛堢敤浜庢仮澶嶏級
-  calibrationState: ScriptCalibrationState;           // 鏍″噯浠诲姟鐘舵€侊紙鎸佷箙鍖栵紝鏀寔鍒囨崲鏉垮潡鎭㈠锛?
+  calibrationState: ScriptCalibrationState;
+  taskError?: string;
   seriesMeta: SeriesMeta | null;                      // 鍓х骇鍏冩暟鎹紙璺ㄩ泦鍏变韩锛?
 }
 
@@ -200,6 +202,62 @@ const cloneScriptCharacters = (characters: ScriptCharacter[] | undefined): Scrip
     }));
 };
 
+export const INTERRUPTED_SCRIPT_TASK = '上次剧本任务已中断，现有内容已保留，请重试未完成的步骤。';
+
+export function recoverInterruptedScriptTasks(projectId: string, project: ScriptProjectData): ScriptProjectData {
+  const calibration = { ...project.calibrationState,
+    singleShotCalibrationStatus: { ...project.calibrationState.singleShotCalibrationStatus } };
+  let interrupted = false;
+  const fields = [
+    ['importStatus', 'importing', 'import'],
+    ['synopsisStatus', 'generating', 'synopsis'],
+    ['titleCalibrationStatus', 'calibrating', 'titles'],
+    ['characterCalibrationStatus', 'calibrating', 'characters'],
+    ['sceneCalibrationStatus', 'calibrating', 'scenes'],
+    ['viewpointAnalysisStatus', 'analyzing', 'viewpoints'],
+    ['structureCompletionStatus', 'processing', 'structure'],
+  ] as const;
+  for (const [field, busy, key] of fields) {
+    if (calibration[field] === busy && !hasLiveScriptTask(projectId, key) && !hasLiveScriptTask(projectId, 'import')) {
+      calibration[field] = 'error';
+      interrupted = true;
+    }
+  }
+  for (const [shotId, status] of Object.entries(calibration.singleShotCalibrationStatus)) {
+    if (status === 'calibrating' && !hasLiveScriptTask(projectId, `single-shot:${shotId}`)) {
+      calibration.singleShotCalibrationStatus[shotId] = 'error';
+      interrupted = true;
+    }
+  }
+  const episodes = project.episodeRawScripts.map(ep => {
+    if (ep.shotGenerationStatus !== 'generating' || hasLiveScriptTask(projectId, `episode-shots:${ep.episodeIndex}`)) return ep;
+    interrupted = true;
+    return { ...ep, shotGenerationStatus: 'error' as const };
+  });
+  const parseOrphan = project.parseStatus === 'parsing' && !hasLiveScriptTask(projectId, 'parse');
+  const shotsOrphan = project.shotStatus === 'generating' && !hasLiveScriptTask(projectId, 'shots');
+  const progressOrphan = project.batchProgress !== null && !hasLiveScriptTask(projectId);
+  if (!interrupted && !parseOrphan && !shotsOrphan && !progressOrphan) return project;
+  return {
+    ...project, calibrationState: calibration, episodeRawScripts: episodes,
+    parseStatus: parseOrphan ? 'error' : project.parseStatus,
+    parseError: parseOrphan ? INTERRUPTED_SCRIPT_TASK : project.parseError,
+    shotStatus: shotsOrphan ? 'error' : project.shotStatus,
+    shotError: shotsOrphan ? INTERRUPTED_SCRIPT_TASK : project.shotError,
+    batchProgress: hasLiveScriptTask(projectId) ? project.batchProgress : null,
+    taskError: interrupted || parseOrphan || shotsOrphan ? INTERRUPTED_SCRIPT_TASK : project.taskError,
+  };
+}
+
+export const reconcileScriptTasks = (projectId: string): void => {
+  useScriptStore.setState(state => {
+    const project = state.projects[projectId];
+    if (!project) return state;
+    const recovered = recoverInterruptedScriptTasks(projectId, project);
+    return recovered === project ? state : { projects: { ...state.projects, [projectId]: recovered } };
+  });
+};
+
 const normalizeScriptProjectData = (projectId: string, projectData: any): ScriptProjectData => {
   const defaults = defaultProjectData();
   const defaultCalibration = defaultCalibrationState();
@@ -239,7 +297,7 @@ const normalizeScriptProjectData = (projectId: string, projectData: any): Script
     pendingCharacterRecoveryProjectIds.add(projectId);
   }
 
-  return normalizedProject;
+  return recoverInterruptedScriptTasks(projectId, normalizedProject);
 };
 
 const flushRecoveredCharactersToDisk = (state: ScriptStore | undefined) => {
@@ -485,6 +543,7 @@ export const useScriptStore = create<ScriptStore>()(
       },
 
       resetProjectData: (projectId) => {
+        cancelScriptTasks(projectId);
         set((state) => ({
           projects: {
             ...state.projects,
@@ -1096,15 +1155,8 @@ export const useScriptStore = create<ScriptStore>()(
     }),
     {
       name: "moyin-script-store",
-      storage: createJSONStorage(() => createProjectScopedStorage('script')),
-      partialize: (state) => {
-        const pid = state.activeProjectId;
-        if (!pid || !state.projects[pid]) return { activeProjectId: pid };
-        return {
-          activeProjectId: pid,
-          projectData: state.projects[pid],
-        };
-      },
+      storage: createJSONStorage(() => createProjectMapStorage('script')),
+      partialize: (state) => ({ activeProjectId: state.activeProjectId, projects: state.projects }),
       merge: (persisted: any, current: any) => {
         if (!persisted) return current;
         
@@ -1117,7 +1169,7 @@ export const useScriptStore = create<ScriptStore>()(
           return {
             ...current,
             ...persisted,
-            projects: normalizedProjects,
+            projects: { ...normalizedProjects, ...current.projects },
           };
         }
         
@@ -1128,7 +1180,7 @@ export const useScriptStore = create<ScriptStore>()(
         return {
           ...current,
           activeProjectId: pid,
-          projects: { ...current.projects, [pid]: normalizeScriptProjectData(pid, projectData) },
+          projects: { ...current.projects, [pid]: normalizeScriptProjectData(pid, current.projects[pid] || projectData) },
         };
       },
       onRehydrateStorage: () => (state, error) => {
@@ -1143,6 +1195,8 @@ export const useScriptStore = create<ScriptStore>()(
     }
   )
 );
+
+onScriptTasksSettled(reconcileScriptTasks);
 
 export const useActiveScriptProject = (): ScriptProjectData | null => {
   return useScriptStore((state) => {

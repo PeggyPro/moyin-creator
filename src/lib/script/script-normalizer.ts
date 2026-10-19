@@ -204,7 +204,7 @@ export interface ScriptStructureAnalysis {
  * AI 结构检测：调用 LLM 分析剧本结构，识别标题/大纲/人物/年代，并补全缺失大纲
  * @returns 分析结果，AI 不可用或调用失败时返回 null
  */
-export async function analyzeScriptStructureWithAI(text: string): Promise<ScriptStructureAnalysis | null> {
+export async function analyzeScriptStructureWithAI(text: string, signal?: AbortSignal): Promise<ScriptStructureAnalysis | null> {
   // 检查 AI 是否可用
   const config = getFeatureConfig('script_analysis');
   if (!config) {
@@ -255,7 +255,7 @@ export async function analyzeScriptStructureWithAI(text: string): Promise<Script
 11. 只分析结构，不修改任何原文内容`;
 
     // 最多重试 2 次（共 3 次尝试），避免临时网络错误导致降级
-    const MAX_RETRIES = 2;
+    const MAX_RETRIES = 0; // callFeatureAPI owns retries.
     let result: string | null = null;
     let lastError: Error | null = null;
     
@@ -270,10 +270,12 @@ export async function analyzeScriptStructureWithAI(text: string): Promise<Script
         result = await callFeatureAPI('script_analysis', systemPrompt, analysisText, {
           temperature: 0.1,
           maxTokens: 1024,
+          signal,
         });
         break; // 成功则跳出重试循环
       } catch (e) {
         lastError = e as Error;
+        if (signal?.aborted || lastError.name === 'AbortError' || lastError.name === 'TimeoutError') throw e;
         console.warn(`[scriptNormalizer] AI 调用失败 (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, lastError.message);
       }
     }
@@ -325,6 +327,7 @@ export async function analyzeScriptStructureWithAI(text: string): Promise<Script
     
     return analysis;
   } catch (error) {
+    if (signal?.aborted || (error as Error)?.name === 'AbortError' || (error as Error)?.name === 'TimeoutError') throw error;
     console.warn('[scriptNormalizer] AI 结构检测失败，将降级到正则兜底:', error);
     return null;
   }

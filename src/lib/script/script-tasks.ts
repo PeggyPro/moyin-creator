@@ -34,13 +34,25 @@ export async function runScriptTask<T>(
   projectId: string,
   key: string,
   operation: (run: ScriptRun) => Promise<T>,
+  parentSignal?: AbortSignal,
 ): Promise<T> {
-  // Reimport replaces the entire workflow, including its outstanding child work.
   if (key === 'import') cancelScriptTasks(projectId);
   let projectRuns = runs.get(projectId);
   if (!projectRuns) runs.set(projectId, projectRuns = new Map());
+  const category = key.split(':')[0];
+  // These UI actions share one progress/status field. A newer action owns it.
+  if (['parse', 'scenes', 'viewpoints'].includes(category) && !parentSignal) {
+    projectRuns.forEach(other => {
+      if (other.key.split(':')[0] === category && !other.key.endsWith(':service')) {
+        other.controller.abort(new DOMException('剧本任务已被替换，请重试', 'AbortError'));
+      }
+    });
+  }
   projectRuns.get(key)?.controller.abort(new DOMException('剧本任务已被替换，请重试', 'AbortError'));
   const controller = new AbortController();
+  const abortFromParent = () => controller.abort(parentSignal?.reason || new DOMException('剧本任务已取消', 'AbortError'));
+  parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  if (parentSignal?.aborted) abortFromParent();
   const run: ScriptRun & { controller: AbortController } = {
     id: ++nextRunId, projectId, key, signal: controller.signal, controller,
     isCurrent: () => runs.get(projectId)?.get(key) === run && !controller.signal.aborted,
@@ -48,12 +60,17 @@ export async function runScriptTask<T>(
       if (!run.isCurrent()) throw controller.signal.reason || new DOMException('剧本任务已失效，请重试', 'AbortError');
     },
     wait: async <R>(promise: Promise<R>): Promise<R> => {
-      run.assertCurrent();
+      if (!run.isCurrent()) {
+        // The argument may already have started work before wait was called.
+        void promise.catch(() => {});
+        run.assertCurrent();
+      }
       let abort: () => void = () => {};
       try {
         const result = await Promise.race([promise, new Promise<never>((_, reject) => {
           abort = () => reject(controller.signal.reason);
           controller.signal.addEventListener('abort', abort, { once: true });
+          if (controller.signal.aborted) abort();
         })]);
         run.assertCurrent();
         return result;
@@ -64,8 +81,10 @@ export async function runScriptTask<T>(
   };
   projectRuns.set(key, run);
   try {
+    run.assertCurrent();
     return await operation(run);
   } finally {
+    parentSignal?.removeEventListener('abort', abortFromParent);
     if (runs.get(projectId)?.get(key) === run) {
       projectRuns.delete(key);
       if (!projectRuns.size) runs.delete(projectId);

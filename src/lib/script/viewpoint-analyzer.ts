@@ -28,6 +28,7 @@ export interface ViewpointAnalysisResult {
 }
 
 export interface ViewpointAnalysisOptions {
+  signal?: AbortSignal;
   /** 本集大纲/剧情摘要 */
   episodeSynopsis?: string;
   /** 本集关键事件 */
@@ -151,7 +152,7 @@ ${shotSummaries}
     console.log('[analyzeSceneViewpoints] 分镜数量:', shots.length);
     
     // 统一从服务映射获取配置
-    const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt);
+    const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt, { signal: options?.signal });
     
     console.log('[analyzeSceneViewpoints] ✅ AI API 调用成功，返回内容长度:', result.length);
     console.log('[analyzeSceneViewpoints] 原始响应前 200 字符:', result.slice(0, 200));
@@ -165,6 +166,7 @@ ${shotSummaries}
     }
     
     const parsed = JSON.parse(cleaned);
+    if (!Array.isArray(parsed.viewpoints) || parsed.viewpoints.length === 0) throw new Error('AI 未返回有效视角，请重试');
     
     console.log('[analyzeSceneViewpoints] 🎯 JSON 解析成功，视角数量:', parsed.viewpoints?.length || 0);
     
@@ -192,15 +194,7 @@ ${shotSummaries}
     console.error('[analyzeSceneViewpoints] Error message:', err.message);
     console.error('[analyzeSceneViewpoints] Error stack:', err.stack);
     
-    // 降级：返回基础视角
-    return {
-      viewpoints: [
-        { id: 'overview', name: '全景', nameEn: 'Overview', description: '整体空间布局', descriptionEn: 'Overall spatial layout', keyProps: [], keyPropsEn: [], shotIndexes: [] },
-        { id: 'medium', name: '中景', nameEn: 'Medium Shot', description: '中景视角', descriptionEn: 'Medium view', keyProps: [], keyPropsEn: [], shotIndexes: [] },
-        { id: 'detail', name: '细节', nameEn: 'Detail', description: '细节特写', descriptionEn: 'Detail close-up', keyProps: [], keyPropsEn: [], shotIndexes: [] },
-      ],
-      analysisNote: 'AI 分析失败，使用默认视角',
-    };
+    throw error;
   }
 }
 
