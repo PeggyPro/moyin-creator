@@ -8,6 +8,7 @@
  * 显示分镜切割结果，支持编辑提示词、上传尾帧、选择角色库、添加情绪标签
  */
 
+import { getAuthorizationHeaders, isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from '@/lib/provider-config';
 import React, { useState, useCallback, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -758,8 +759,8 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
     }
     
     const keyManager = featureConfig.keyManager;
-    const apiKey = keyManager.getCurrentKey() || '';
-    if (!apiKey) {
+    const apiKey = keyManager.getCurrentKey();
+    if (apiKey === null) {
       toast.error('请先在设置中配置图片生成服务映射');
       setQuadGridOpen(false);
       return;
@@ -928,7 +929,7 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
           statusUrl.searchParams.set('_ts', Date.now().toString());
           
           const statusResp = await fetch(statusUrl.toString(), {
-            headers: { 'Authorization': `Bearer ${apiKey}` },
+            headers: { ...getAuthorizationHeaders(apiKey) },
           });
           
           if (!statusResp.ok) throw new Error(`查询任务失败: ${statusResp.status}`);
@@ -1222,9 +1223,13 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       toast.error(getFeatureNotConfiguredMessage('video_generation'));
       return;
     }
+    if (isComfyUIProvider(featureConfig.provider)) {
+      toast.error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+      return;
+    }
     const keyManager = featureConfig.keyManager;
-    const apiKey = keyManager.getCurrentKey() || '';
-    if (!apiKey) {
+    const apiKey = keyManager.getCurrentKey();
+    if (apiKey === null) {
       toast.error('请先在设置中配置图片生成服务映射');
       return;
     }
@@ -1428,6 +1433,10 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       toast.error(getFeatureNotConfiguredMessage('video_generation'));
       return;
     }
+    if (isComfyUIProvider(featureConfig.provider)) {
+      toast.error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+      return;
+    }
     
     // 从服务映射获取 platform 和 model
     const platform = featureConfig.platform;
@@ -1446,8 +1455,8 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
     
     // Get rotating key from manager
     const keyManager = featureConfig.keyManager;
-    const apiKey = keyManager.getCurrentKey() || '';
-    if (!apiKey) {
+    const apiKey = keyManager.getCurrentKey();
+    if (apiKey === null) {
       toast.error(`请先配置 ${platform} API Key`);
       return;
     }
@@ -1616,6 +1625,12 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
         keyManager,
         platform,
         storyboardConfig.videoResolution as '480p' | '720p' | '1080p' | undefined,
+        undefined, // videoRefs
+        undefined, // audioRefs
+        undefined, // enableAudio
+        undefined, // cameraFixed
+        undefined, // signal
+        featureConfig,
       );
 
       // Save video to local file system (Electron) for persistence
@@ -1710,8 +1725,8 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
     }
     
     const keyManager = featureConfig.keyManager;
-    const apiKey = keyManager.getCurrentKey() || '';
-    if (!apiKey) {
+    const apiKey = keyManager.getCurrentKey();
+    if (apiKey === null) {
       toast.error('请先在设置中配置图片生成服务映射');
       return;
     }
@@ -1855,7 +1870,7 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
           const statusResponse = await fetch(url.toString(), {
             method: 'GET',
             headers: {
-              'Authorization': `Bearer ${apiKey}`,
+              ...getAuthorizationHeaders(apiKey),
               'Cache-Control': 'no-cache',
             },
           });
@@ -2021,8 +2036,8 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
     }
     
     const keyManager = featureConfig.keyManager;
-    const apiKey = keyManager.getCurrentKey() || '';
-    if (!apiKey) {
+    const apiKey = keyManager.getCurrentKey();
+    if (apiKey === null) {
       toast.error('请先在设置中配置图片生成服务映射');
       return;
     }
@@ -2395,7 +2410,7 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
           statusUrl.searchParams.set('_ts', Date.now().toString());
           
           const statusResp = await fetch(statusUrl.toString(), {
-            headers: { 'Authorization': `Bearer ${apiKey}` },
+            headers: { ...getAuthorizationHeaders(apiKey) },
           });
           
           if (!statusResp.ok) throw new Error(`查询任务失败: ${statusResp.status}`);
@@ -2624,8 +2639,8 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
     if (!model) {
       throw new Error('请先在设置中配置图片生成模型');
     }
-    const apiKeyToUse = apiKey || featureConfig.keyManager.getCurrentKey() || '';
-    if (!apiKeyToUse) {
+    const apiKeyToUse = featureConfig.keyManager.getCurrentKey();
+    if (apiKeyToUse === null) {
       throw new Error('请先在设置中配置图片生成服务映射');
     }
     const imageBaseUrl = featureConfig.baseUrl?.replace(/\/+$/, '');
@@ -2675,7 +2690,7 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
         else updateSplitSceneImageStatus(sceneId, { imageProgress: progress });
         const url = new URL(`${imageBaseUrl}/v1/tasks/${taskId}`);
         url.searchParams.set('_ts', Date.now().toString());
-        const statusResp = await fetch(url.toString(), { method: 'GET', headers: { 'Authorization': `Bearer ${apiKeyToUse}`, 'Cache-Control': 'no-cache' } });
+        const statusResp = await fetch(url.toString(), { method: 'GET', headers: { ...getAuthorizationHeaders(apiKeyToUse), 'Cache-Control': 'no-cache' } });
         if (!statusResp.ok) throw new Error(`Failed to check task status: ${statusResp.status}`);
         const statusData = await statusResp.json();
         const status = (statusData.status ?? statusData.data?.status ?? 'unknown').toString().toLowerCase();
@@ -2724,8 +2739,8 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       return;
     }
     const keyManager = featureConfig.keyManager;
-    const apiKey = keyManager.getCurrentKey() || '';
-    if (!apiKey) {
+    const apiKey = keyManager.getCurrentKey();
+    if (apiKey === null) {
       toast.error('请先在设置中配置图片生成服务映射');
       return;
     }
@@ -2864,7 +2879,7 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
           const statusResponse = await fetch(url.toString(), {
             method: 'GET',
             headers: {
-              'Authorization': `Bearer ${apiKey}`,
+              ...getAuthorizationHeaders(apiKey),
               'Cache-Control': 'no-cache',
             },
           });

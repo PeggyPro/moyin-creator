@@ -107,6 +107,7 @@ export interface SplitSceneCardProps {
   onSaveToLibrary?: (scene: SplitScene, type: 'image' | 'video') => void;
   onGenerateImage?: (sceneId: number) => void;
   onGenerateVideo?: (sceneId: number) => void;
+  videoUnavailableReason?: string;
   onGenerateEndFrame?: (sceneId: number) => void;
   onRemoveImage?: (sceneId: number) => void;
   onUploadImage?: (sceneId: number, imageDataUrl: string) => void;
@@ -149,6 +150,7 @@ export function SplitSceneCard({
   onSaveToLibrary,
   onGenerateImage,
   onGenerateVideo,
+  videoUnavailableReason,
   onGenerateEndFrame,
   onRemoveImage,
   onUploadImage,
@@ -826,7 +828,8 @@ export function SplitSceneCard({
                 variant={isVideoReady ? "outline" : "default"}
                 className="h-7 text-xs"
                 onClick={() => onGenerateVideo?.(scene.id)}
-                disabled={isGeneratingAny || isVideoGenerating}
+                disabled={isGeneratingAny || isVideoGenerating || !!videoUnavailableReason}
+                title={videoUnavailableReason}
               >
                 {isVideoGenerating ? (
                   <><Loader2 className="h-3 w-3 mr-1 animate-spin" />生成中 {scene.videoProgress}%</>

@@ -103,7 +103,7 @@ export function ShotList({ projectId, shots, styleId }: ShotListProps) {
     const apiKey = imageConfig.apiKey;
     const baseUrl = imageConfig.baseUrl?.replace(/\/+$/, '');
     const model = imageConfig.models?.[0];
-    if (!apiKey || !baseUrl || !model) {
+    if (!baseUrl || !model) {
       toast.error(getFeatureNotConfiguredMessage('character_generation'));
       return;
     }
@@ -161,7 +161,7 @@ export function ShotList({ projectId, shots, styleId }: ShotListProps) {
     const apiKey = videoConfig.apiKey;
     const baseUrl = videoConfig.baseUrl?.replace(/\/+$/, '');
     const model = videoConfig.models?.[0];
-    if (!apiKey || !baseUrl || !model) {
+    if (!baseUrl || !model) {
       toast.error(getFeatureNotConfiguredMessage('video_generation'));
       return;
     }
@@ -220,7 +220,7 @@ export function ShotList({ projectId, shots, styleId }: ShotListProps) {
     const apiKey = imageConfig.apiKey;
     const baseUrl = imageConfig.baseUrl?.replace(/\/+$/, '');
     const model = imageConfig.models?.[0];
-    if (!apiKey || !baseUrl || !model) {
+    if (!baseUrl || !model) {
       toast.error(getFeatureNotConfiguredMessage('character_generation'));
       return;
     }

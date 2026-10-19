@@ -7,6 +7,7 @@
  * Based on CineGen-AI geminiService.ts patterns
  */
 
+import { getAuthorizationHeaders } from '@/lib/provider-config';
 import type { ScriptData, ScriptCharacter, ScriptScene, ScriptParagraph, Shot } from "@/types/script";
 import { retryOperation } from "@/lib/utils/retry";
 import { cleanJsonString, safeParseJson, normalizeIds } from "@/lib/utils/json-cleaner";
@@ -222,21 +223,17 @@ export async function callChatAPI(
   console.log('[callChatAPI] systemPrompt 长度:', systemPrompt.length);
   console.log('[callChatAPI] userPrompt 长度:', userPrompt.length);
   
-  if (!apiKey) {
-    console.error('[callChatAPI] ❌ API Key 为空！');
-    throw new Error('API Key 未配置');
-  }
-  
-  // Create or use existing key manager for rotation
-  const keyManager = options.keyManager || new ApiKeyManager(apiKey);
+  // Explicit empty keys permit unauthenticated requests; a supplied manager
+  // remains authoritative for key availability and rotation.
+  const keyManager = options.keyManager || new ApiKeyManager(apiKey, true);
   
   const totalKeys = keyManager.getTotalKeyCount();
   console.log(`[callChatAPI] 使用 ${provider}，共 ${totalKeys} 个 API keys`);
 
-  if (!baseUrl) {
+  if (!baseUrl?.trim()) {
     throw new Error('Base URL 未配置');
   }
-  if (!model) {
+  if (!model?.trim()) {
     throw new Error('模型未配置');
   }
   const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
@@ -289,7 +286,7 @@ export async function callChatAPI(
   return await retryOperation(async () => {
     // Get current key from rotation
     const currentKey = keyManager.getCurrentKey();
-    if (!currentKey) {
+    if (currentKey === null) {
       throw new Error('No API keys available');
     }
     
@@ -297,7 +294,7 @@ export async function callChatAPI(
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${currentKey}`,
+      ...getAuthorizationHeaders(currentKey),
     };
     
     // 模型选择逻辑：必须使用配置 model
@@ -612,9 +609,9 @@ export async function generateShotList(
   }
 
   // Determine concurrency based on available keys
-  const keyManager = new ApiKeyManager(options.apiKey);
+  const keyManager = options.keyManager || new ApiKeyManager(options.apiKey, true);
   const keyCount = keyManager.getTotalKeyCount();
-  const concurrency = options.concurrency || Math.min(keyCount, 4); // Max 4 parallel
+  const concurrency = options.concurrency || Math.max(1, Math.min(keyCount, 4)); // Max 4 parallel
   
   console.log(`[generateShotList] Processing ${totalScenes} scenes with concurrency ${concurrency} (${keyCount} keys)`);
 

@@ -397,8 +397,8 @@ Return a RAW JSON array (no markdown code block). BILINGUAL output required.
 ]
 `;
 
-  // Mock mode for testing without API
-  if (apiKey === 'mock' || !apiKey) {
+  // Only explicit mock mode returns sample prompts; a configured service may be unauthenticated.
+  if (apiKey === 'mock') {
     console.log('[ScenePromptGenerator] Using mock response');
     await new Promise(resolve => setTimeout(resolve, 2000));
     return scenes.map((s, index) => {

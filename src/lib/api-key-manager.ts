@@ -24,6 +24,7 @@ export interface IProvider {
   name: string;
   baseUrl: string;
   apiKey: string; // Supports comma or newline separated multiple keys
+  apiKeyOptional?: boolean; // Custom/local services default to unauthenticated requests when no key is set.
   model: string[];
   capabilities?: ModelCapability[];
   contextLimit?: number;
@@ -314,10 +315,19 @@ export class ApiKeyManager {
   private currentIndex: number;
   private blacklist: Map<string, BlacklistedKey> = new Map();
 
-  constructor(apiKeyString: string) {
+  constructor(apiKeyString: string, private allowUnauthenticated = false) {
     this.keys = parseApiKeys(apiKeyString);
     // Start with a random index for load balancing
     this.currentIndex = this.keys.length > 0 ? Math.floor(Math.random() * this.keys.length) : 0;
+  }
+
+  allowsUnauthenticatedRequests(): boolean {
+    return this.allowUnauthenticated;
+  }
+
+  matchesConfiguration(apiKeyString: string, allowUnauthenticated = false): boolean {
+    return this.allowUnauthenticated === allowUnauthenticated
+      && this.keys.join(',') === parseApiKeys(apiKeyString).join(',');
   }
 
   /**
@@ -326,7 +336,7 @@ export class ApiKeyManager {
   getCurrentKey(): string | null {
     this.cleanupBlacklist();
     
-    if (this.keys.length === 0) return null;
+    if (this.keys.length === 0) return this.allowUnauthenticated ? '' : null;
 
     // Find a non-blacklisted key starting from current index
     for (let i = 0; i < this.keys.length; i++) {
@@ -389,6 +399,7 @@ export class ApiKeyManager {
    * Returns true if key was rotated
    */
   handleError(statusCode: number, errorText?: string): boolean {
+    if (this.keys.length === 0) return false;
     if (statusCode === 429) {
       this.markCurrentKeyFailed('rate_limit');
       return true;
@@ -448,8 +459,9 @@ export class ApiKeyManager {
   /**
    * Reset the manager with new keys
    */
-  reset(apiKeyString: string): void {
+  reset(apiKeyString: string, allowUnauthenticated = this.allowUnauthenticated): void {
     this.keys = parseApiKeys(apiKeyString);
+    this.allowUnauthenticated = allowUnauthenticated;
     this.currentIndex = this.keys.length > 0 ? Math.floor(Math.random() * this.keys.length) : 0;
     this.blacklist.clear();
   }
@@ -467,28 +479,30 @@ function getScopedProviderKey(providerId: string, scopeKey?: string): string {
 /**
  * Get or create an ApiKeyManager for a provider
  */
-export function getProviderKeyManager(providerId: string, apiKey: string, scopeKey?: string): ApiKeyManager {
+export function getProviderKeyManager(providerId: string, apiKey: string, scopeKey?: string, allowUnauthenticated = false): ApiKeyManager {
   const managerKey = getScopedProviderKey(providerId, scopeKey);
   let manager = providerManagers.get(managerKey);
-  
+
   if (!manager) {
-    manager = new ApiKeyManager(apiKey);
+    manager = new ApiKeyManager(apiKey, allowUnauthenticated);
     providerManagers.set(managerKey, manager);
+  } else if (!manager.matchesConfiguration(apiKey, allowUnauthenticated)) {
+    manager.reset(apiKey, allowUnauthenticated);
   }
-  
+
   return manager;
 }
 
 /**
  * Update the keys for a provider's manager
  */
-export function updateProviderKeys(providerId: string, apiKey: string, scopeKey?: string): void {
+export function updateProviderKeys(providerId: string, apiKey: string, scopeKey?: string, allowUnauthenticated = false): void {
   const managerKey = getScopedProviderKey(providerId, scopeKey);
   const manager = providerManagers.get(managerKey);
   if (manager) {
-    manager.reset(apiKey);
+    manager.reset(apiKey, allowUnauthenticated);
   } else {
-    providerManagers.set(managerKey, new ApiKeyManager(apiKey));
+    providerManagers.set(managerKey, new ApiKeyManager(apiKey, allowUnauthenticated));
   }
 }
 

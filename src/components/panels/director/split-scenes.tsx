@@ -8,6 +8,7 @@
  * 显示分镜切割结果，支持编辑提示词、上传尾帧、选择角色库、添加情绪标签
  */
 
+import { getAuthorizationHeaders, isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from '@/lib/provider-config';
 import React, { useState, useCallback, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -62,7 +63,7 @@ import {
 import { generateScenePrompts } from "@/lib/storyboard/scene-prompt-generator";
 import { useAPIConfigStore } from "@/stores/api-config-store";
 import { parseApiKeys } from "@/lib/api-key-manager";
-import { getFeatureConfig, getFeatureNotConfiguredMessage } from "@/lib/ai/feature-router";
+import { getAllFeatureConfigs, getFeatureConfig, getFeatureNotConfiguredMessage } from "@/lib/ai/feature-router";
 import { submitGridImageRequest } from "@/lib/ai/image-generator";
 import { uploadToImageHost, isImageHostConfigured } from "@/lib/image-host";
 import { saveVideoToLocal, readImageAsBase64 } from '@/lib/image-storage';
@@ -455,6 +456,11 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
   }, [setStoryboardConfig]);
 
   const { getApiKey, getProviderByPlatform, concurrency } = useAPIConfigStore();
+  // Inspect mappings without advancing the generation round-robin.
+  const videoConfigs = getAllFeatureConfigs('video_generation');
+  const videoUnavailableReason = videoConfigs.length > 0 && videoConfigs.every(config => isComfyUIProvider(config.provider))
+    ? COMFYUI_VIDEO_UNSUPPORTED_MESSAGE
+    : undefined;
   const { addMediaFromUrl, getOrCreateCategoryFolder } = useMediaStore();
   
   // Get system category folder IDs for auto-saving (images → AI图片, videos → AI视频)
@@ -969,8 +975,8 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
     }
     
     const keyManager = featureConfig.keyManager;
-    const apiKey = keyManager.getCurrentKey() || '';
-    if (!apiKey) {
+    const apiKey = keyManager.getCurrentKey();
+    if (apiKey === null) {
       toast.error('请先在设置中配置图片生成服务映射');
       setQuadGridOpen(false);
       return;
@@ -1153,7 +1159,7 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
           statusUrl.searchParams.set('_ts', Date.now().toString());
           
           const statusResp = await fetch(statusUrl.toString(), {
-            headers: { 'Authorization': `Bearer ${apiKey}` },
+            headers: { ...getAuthorizationHeaders(apiKey) },
           });
           
           if (!statusResp.ok) throw new Error(`查询任务失败: ${statusResp.status}`);
@@ -1478,6 +1484,10 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       toast.error(getFeatureNotConfiguredMessage('video_generation'));
       return;
     }
+    if (isComfyUIProvider(featureConfig.provider)) {
+      toast.error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+      return;
+    }
     
     // 从服务映射获取 platform 和 model
     const platform = featureConfig.platform;
@@ -1498,8 +1508,8 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
     
     // Get rotating key from manager
     const keyManager = featureConfig.keyManager;
-    const apiKey = keyManager.getCurrentKey() || '';
-    if (!apiKey) {
+    const apiKey = keyManager.getCurrentKey();
+    if (apiKey === null) {
       toast.error(`请先配置 ${platform} API Key`);
       return;
     }
@@ -1764,6 +1774,7 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
         undefined,  // enableAudio
         undefined,  // cameraFixed
         videoController.signal,
+        featureConfig,
       );
 
       // Save video to local file system (Electron) for persistence
@@ -1867,6 +1878,10 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       toast.error(getFeatureNotConfiguredMessage('video_generation'));
       return;
     }
+    if (isComfyUIProvider(featureConfig.provider)) {
+      toast.error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+      return;
+    }
 
     // Check if all scenes have prompts
     const scenesWithoutPrompts = splitScenes.filter(
@@ -1931,8 +1946,8 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
     }
     
     const keyManager = featureConfig.keyManager;
-    const apiKey = keyManager.getCurrentKey() || '';
-    if (!apiKey) {
+    const apiKey = keyManager.getCurrentKey();
+    if (apiKey === null) {
       toast.error('请先在设置中配置图片生成服务映射');
       return;
     }
@@ -2097,7 +2112,7 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
           const statusResponse = await fetch(url.toString(), {
             method: 'GET',
             headers: {
-              'Authorization': `Bearer ${apiKey}`,
+              ...getAuthorizationHeaders(apiKey),
               'Cache-Control': 'no-cache',
             },
             signal: imageSignal,
@@ -2287,8 +2302,8 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
     }
     
     const keyManager = featureConfig.keyManager;
-    const apiKey = keyManager.getCurrentKey() || '';
-    if (!apiKey) {
+    const apiKey = keyManager.getCurrentKey();
+    if (apiKey === null) {
       toast.error('请先在设置中配置图片生成服务映射');
       return;
     }
@@ -2723,7 +2738,7 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
           statusUrl.searchParams.set('_ts', Date.now().toString());
           
           const statusResp = await fetch(statusUrl.toString(), {
-            headers: { 'Authorization': `Bearer ${apiKey}` },
+            headers: { ...getAuthorizationHeaders(apiKey) },
           });
           
           if (!statusResp.ok) throw new Error(`查询任务失败: ${statusResp.status}`);
@@ -2959,8 +2974,8 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
     if (!model) {
       throw new Error('请先在设置中配置图片生成模型');
     }
-    const apiKeyToUse = apiKey || featureConfig.keyManager.getCurrentKey() || '';
-    if (!apiKeyToUse) {
+    const apiKeyToUse = featureConfig.keyManager.getCurrentKey();
+    if (apiKeyToUse === null) {
       throw new Error('请先在设置中配置图片生成服务映射');
     }
     const imageBaseUrl = featureConfig.baseUrl?.replace(/\/+$/, '');
@@ -3015,7 +3030,7 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
         else updateSplitSceneImageStatus(sceneId, { imageProgress: progress });
         const url = new URL(`${imageBaseUrl}/v1/tasks/${taskId}`);
         url.searchParams.set('_ts', Date.now().toString());
-        const statusResp = await fetch(url.toString(), { method: 'GET', headers: { 'Authorization': `Bearer ${apiKeyToUse}`, 'Cache-Control': 'no-cache' } });
+        const statusResp = await fetch(url.toString(), { method: 'GET', headers: { ...getAuthorizationHeaders(apiKeyToUse), 'Cache-Control': 'no-cache' } });
         if (!statusResp.ok) throw new Error(`Failed to check task status: ${statusResp.status}`);
         const statusData = await statusResp.json();
         const status = (statusData.status ?? statusData.data?.status ?? 'unknown').toString().toLowerCase();
@@ -3064,8 +3079,8 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       return;
     }
     const keyManager = featureConfig.keyManager;
-    const apiKey = keyManager.getCurrentKey() || '';
-    if (!apiKey) {
+    const apiKey = keyManager.getCurrentKey();
+    if (apiKey === null) {
       toast.error('请先在设置中配置图片生成服务映射');
       return;
     }
@@ -3224,7 +3239,7 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
           const statusResponse = await fetch(url.toString(), {
             method: 'GET',
             headers: {
-              'Authorization': `Bearer ${apiKey}`,
+              ...getAuthorizationHeaders(apiKey),
               'Cache-Control': 'no-cache',
             },
             signal: endFrameSignal,
@@ -3392,6 +3407,13 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
           </TabsList>
         </Tabs>
       </div>
+
+      {videoConfigs.length > 0 && (
+        <div className={cn("rounded-md border p-3 text-xs space-y-1", videoUnavailableReason ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400" : "text-muted-foreground")} role={videoUnavailableReason ? "alert" : "status"}>
+          <p>视频服务：{videoConfigs.map(config => `${config.provider.name} / ${config.model}`).join('、')}</p>
+          {videoUnavailableReason && <p>{videoUnavailableReason}</p>}
+        </div>
+      )}
 
       {/* 预告片 Tab 内容 - 完全复用分镜编辑的功能 */}
       {activeTab === "trailer" && (
@@ -3578,6 +3600,7 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
             onSaveToLibrary={handleSaveToLibrary}
             onGenerateImage={handleGenerateSingleImage}
             onGenerateVideo={handleGenerateSingleVideo}
+            videoUnavailableReason={videoUnavailableReason}
             onGenerateEndFrame={handleGenerateEndFrameImage}
             onRemoveImage={handleRemoveImage}
             onUploadImage={handleUploadImage}
@@ -3612,7 +3635,8 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
                             }
                           });
                         }}
-                        disabled={isGenerating || trailerScenes.length === 0}
+                        disabled={isGenerating || trailerScenes.length === 0 || !!videoUnavailableReason}
+                        title={videoUnavailableReason}
                         className="flex-1"
                         size="lg"
                       >
@@ -3911,6 +3935,7 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
             onSaveToLibrary={handleSaveToLibrary}
             onGenerateImage={handleGenerateSingleImage}
             onGenerateVideo={handleGenerateSingleVideo}
+            videoUnavailableReason={videoUnavailableReason}
             onGenerateEndFrame={handleGenerateEndFrameImage}
             onRemoveImage={handleRemoveImage}
             onUploadImage={handleUploadImage}
@@ -3958,7 +3983,8 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
                 <TooltipTrigger asChild>
                   <Button
                     onClick={handleGenerateVideos}
-                    disabled={isGenerating || splitScenes.length === 0 || noImages}
+                    disabled={isGenerating || splitScenes.length === 0 || noImages || !!videoUnavailableReason}
+                    title={videoUnavailableReason}
                     className="flex-1"
                     size="lg"
                   >
@@ -3976,7 +4002,9 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  {noImages ? (
+                  {videoUnavailableReason ? (
+                    <p>{videoUnavailableReason}</p>
+                  ) : noImages ? (
                     <p>请先为分镜生成图片，再生成视频</p>
                   ) : (
                     <p>{scenesWithImages} 个分镜已有图片，{scenesNeedVideo} 个待生成视频</p>

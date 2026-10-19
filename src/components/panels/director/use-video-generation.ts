@@ -1,12 +1,14 @@
 // Copyright (c) 2025 hotflow2024
 // Licensed under AGPL-3.0-or-later. See LICENSE for details.
 // Commercial licensing available. See COMMERCIAL_LICENSE.md.
-import { getFeatureConfig } from "@/lib/ai/feature-router";
+import { getAuthorizationHeaders, isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from '@/lib/provider-config';
+import { getFeatureConfig, type FeatureConfig } from "@/lib/ai/feature-router";
 import { uploadToImageHost, isImageHostConfigured } from "@/lib/image-host";
 import { saveVideoToLocal, readImageAsBase64 } from "@/lib/image-storage";
 import { normalizeUrl } from "./use-image-generation";
 import { useAPIConfigStore } from "@/stores/api-config-store";
 import { retryOperation } from "@/lib/utils/retry";
+import { fetchVideoReference, requestVideoApi, VideoReferenceError } from '@/lib/ai/video-request';
 
 // ==================== Content Moderation ====================
 
@@ -59,8 +61,12 @@ export function getVideoApiConfig() {
     return null;
   }
   
+  if (isComfyUIProvider(featureConfig.provider)) {
+    throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+  }
   const keyManager = featureConfig.keyManager;
-  const apiKey = keyManager.getCurrentKey() || '';
+  const apiKey = keyManager.getCurrentKey();
+  if (apiKey === null) return null;
   const platform = featureConfig.platform;
   const model = featureConfig.models?.[0];
   if (!model) {
@@ -332,24 +338,21 @@ function handleVideoSubmitError(
 async function ensureMinImageSize(
   imageUrl: string,
   minDimension: number = 300,
+  label: string = '参考图片',
+  signal?: AbortSignal,
 ): Promise<string> {
   if (!imageUrl || !imageUrl.startsWith('http')) return imageUrl;
 
   let objectUrl: string | undefined;
   try {
-    // 通过 fetch 加载图片为 blob，避免 CORS 问题
-    const response = await fetch(imageUrl);
-    if (!response.ok) {
-      console.warn('[VideoGen] ensureMinImageSize: fetch failed', response.status);
-      return imageUrl;
-    }
+    const response = await fetchVideoReference(imageUrl, label, signal);
     const blob = await response.blob();
     objectUrl = URL.createObjectURL(blob);
 
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
       const image = new Image();
       image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error('Failed to decode image'));
+      image.onerror = () => reject(new VideoReferenceError(`${label}不是有效图片，请重新生成或上传${label}`));
       image.src = objectUrl!;
     });
 
@@ -399,6 +402,7 @@ async function ensureMinImageSize(
     return imageUrl;
   } catch (e) {
     if (objectUrl) URL.revokeObjectURL(objectUrl);
+    if (e instanceof VideoReferenceError || signal?.aborted || (e instanceof Error && e.name === 'AbortError')) throw e;
     console.warn('[VideoGen] ensureMinImageSize failed, using original:', e);
     return imageUrl;
   }
@@ -436,8 +440,13 @@ export async function callVideoGenerationApi(
   cameraFixed?: boolean,
   /** 外部中止信号，用于停止生成时真正取消网络请求 */
   signal?: AbortSignal,
+  /** Preserve the provider already selected before reference uploads. */
+  videoConfig?: FeatureConfig,
 ): Promise<string> {
-  const featureConfig = getFeatureConfig('video_generation');
+  const featureConfig = videoConfig ?? getFeatureConfig('video_generation');
+  if (featureConfig && isComfyUIProvider(featureConfig.provider)) {
+    throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+  }
   const resolvedPlatform = platform || featureConfig?.platform;
   if (!resolvedPlatform) {
     throw new Error('请先在设置中配置视频生成服务映射');
@@ -455,7 +464,7 @@ export async function callVideoGenerationApi(
   const processedImages = await Promise.all(
     imageWithRoles.map(async (img) => ({
       ...img,
-      url: await ensureMinImageSize(img.url),
+      url: await ensureMinImageSize(img.url, 300, img.role === 'last_frame' ? '尾帧图片' : '首帧图片', signal),
     }))
   );
 
@@ -466,7 +475,8 @@ export async function callVideoGenerationApi(
   return retryOperation(() => {
     if (signal?.aborted) return Promise.reject(new Error('用户已取消'));
     // 每次重试动态取当前 key（keyManager.handleError 已 rotate，需要用新 key）
-    const currentApiKey = keyManager?.getCurrentKey?.() || apiKey;
+    const currentApiKey = keyManager?.getCurrentKey ? keyManager.getCurrentKey() : apiKey;
+    if (currentApiKey === null) throw new Error('No API keys available');
     const keyHint = currentApiKey ? `${currentApiKey.substring(0, 8)}…` : '(none)';
     console.log(`[VideoGen] Using key: ${keyHint}, format: ${format}`);
     switch (format) {
@@ -603,14 +613,15 @@ async function callUnifiedVideoApi(
   console.log(`[VideoGen] Unified format → POST ${endpointPaths.submit}`, { model, metadata, hasImage: !!firstFrame?.url });
 
   // 提交：直接使用端点类型对应的 URL
-  const resp = await fetch(submitUrl, {
+  const resp = await requestVideoApi(submitUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: JSON.stringify(body),
+    signal,
   });
   if (!resp.ok) {
     const errorText = await resp.text();
@@ -652,11 +663,11 @@ async function callUnifiedVideoApi(
     onProgress?.(Math.min(20 + Math.floor((attempt / maxAttempts) * 80), 99));
     await sleepOrAbort(pollInterval, signal);
 
-    const statusResponse = await fetch(pollUrl, {
+    const statusResponse = await requestVideoApi(pollUrl, {
       method: 'GET',
       headers: {
         'Accept': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        ...getAuthorizationHeaders(apiKey),
       },
       signal,
     });
@@ -762,14 +773,15 @@ async function callVolcVideoApi(
     imageCount: imageWithRoles.filter(i => i.url).length,
   });
 
-  const submitResponse = await fetch(`${baseUrl}/volc/v1/contents/generations/tasks`, {
+  const submitResponse = await requestVideoApi(`${baseUrl}/volc/v1/contents/generations/tasks`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: JSON.stringify(requestBody),
+    signal,
   });
 
   if (!submitResponse.ok) {
@@ -823,14 +835,14 @@ async function callVolcVideoApi(
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     onProgress?.(Math.min(20 + Math.floor((attempt / maxAttempts) * 80), 99));
 
-    const statusResponse = await fetch(
+    const statusResponse = await requestVideoApi(
       `${baseUrl}/volc/v1/contents/generations/tasks/${taskId}`,
       {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
+          ...getAuthorizationHeaders(apiKey),
         },
         signal,
       },
@@ -912,15 +924,16 @@ async function callWanVideoApi(
 
   console.log('[VideoGen] Wan format → POST /alibailian/api/v1/services/aigc/video-generation/video-synthesis', { model });
 
-  const submitResponse = await fetch(
+  const submitResponse = await requestVideoApi(
     `${baseUrl}/alibailian/api/v1/services/aigc/video-generation/video-synthesis`,
     {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        ...getAuthorizationHeaders(apiKey),
       },
       body: JSON.stringify(requestBody),
+      signal,
     },
   );
 
@@ -944,11 +957,11 @@ async function callWanVideoApi(
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     onProgress?.(Math.min(20 + Math.floor((attempt / maxAttempts) * 80), 99));
 
-    const statusResponse = await fetch(
+    const statusResponse = await requestVideoApi(
       `${baseUrl}/alibailian/api/v1/tasks/${taskId}`,
       {
         method: 'GET',
-        headers: { 'Authorization': `Bearer ${apiKey}` },
+        headers: { ...getAuthorizationHeaders(apiKey) },
         signal,
       },
     );
@@ -1046,14 +1059,15 @@ async function callKlingVideoApi(
   const submitUrl = `${baseUrl}/kling/v1/videos/${endpointPath}`;
   console.log('[VideoGen] Kling format →', endpointPath, { model, submitUrl });
 
-  const submitResponse = await fetch(submitUrl, {
+  const submitResponse = await requestVideoApi(submitUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: JSON.stringify(requestBody),
+    signal,
   });
 
   if (!submitResponse.ok) {
@@ -1078,11 +1092,11 @@ async function callKlingVideoApi(
     onProgress?.(Math.min(20 + Math.floor((attempt / maxAttempts) * 80), 99));
     await sleepOrAbort(pollInterval, signal);
 
-    const statusResponse = await fetch(pollUrl, {
+    const statusResponse = await requestVideoApi(pollUrl, {
       method: 'GET',
       headers: {
         'Accept': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        ...getAuthorizationHeaders(apiKey),
       },
       signal,
     });
@@ -1149,10 +1163,11 @@ async function callOpenAIOfficialVideoApi(
   const submitUrl = `${baseUrl}/v1/videos`;
   console.log('[VideoGen] OpenAI Official format → POST /v1/videos', { model, size: toSoraSize(aspectRatio, videoResolution) });
 
-  const submitResponse = await fetch(submitUrl, {
+  const submitResponse = await requestVideoApi(submitUrl, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}` },
+    headers: { ...getAuthorizationHeaders(apiKey) },
     body: form,
+    signal,
   });
 
   if (!submitResponse.ok) {
@@ -1178,9 +1193,9 @@ async function callOpenAIOfficialVideoApi(
     onProgress?.(Math.min(20 + Math.floor((attempt / maxAttempts) * 80), 99));
     await sleepOrAbort(pollInterval, signal);
 
-    const statusResponse = await fetch(pollUrl, {
+    const statusResponse = await requestVideoApi(pollUrl, {
       method: 'GET',
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { ...getAuthorizationHeaders(apiKey) },
       signal,
     });
 
@@ -1237,13 +1252,14 @@ async function callReplicateVideoApi(
   const submitUrl = `${rootBase}/replicate/v1/predictions`;
   console.log('[VideoGen] Replicate format → POST /replicate/v1/predictions', { model });
 
-  const submitResponse = await fetch(submitUrl, {
+  const submitResponse = await requestVideoApi(submitUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: JSON.stringify({ model, input }),
+    signal,
   });
 
   if (!submitResponse.ok) {
@@ -1270,9 +1286,9 @@ async function callReplicateVideoApi(
     onProgress?.(Math.min(20 + Math.floor((attempt / maxAttempts) * 80), 99));
     await sleepOrAbort(pollInterval, signal);
 
-    const statusResponse = await fetch(pollUrl, {
+    const statusResponse = await requestVideoApi(pollUrl, {
       method: 'GET',
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { ...getAuthorizationHeaders(apiKey) },
       signal,
     });
 
@@ -1549,15 +1565,17 @@ export async function callJuxinVideoGenerationApi(
   // Submit video generation request（带重试，覆盖 429/503/529，每次重试动态取 key）
   const submitData = await retryOperation(async () => {
     // 每次重试动态取当前 key，利用 keyManager rotate 后的新 key
-    const currentApiKey = keyManager?.getCurrentKey?.() || apiKey;
-    const submitResponse = await fetch(`${apiBaseUrl}/v1/video/create`, {
+    const currentApiKey = keyManager?.getCurrentKey ? keyManager.getCurrentKey() : apiKey;
+    if (currentApiKey === null) throw new Error('No API keys available');
+    const submitResponse = await requestVideoApi(`${apiBaseUrl}/v1/video/create`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': `Bearer ${currentApiKey}`,
+        ...getAuthorizationHeaders(currentApiKey),
       },
       body: JSON.stringify(requestBody),
+      signal,
     });
 
     if (!submitResponse.ok) {
@@ -1616,12 +1634,12 @@ export async function callJuxinVideoGenerationApi(
     const queryUrl = new URL(`${apiBaseUrl}/v1/video/query`);
     queryUrl.searchParams.set('id', taskId);
 
-    const statusResponse = await fetch(queryUrl.toString(), {
+    const statusResponse = await requestVideoApi(queryUrl.toString(), {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        ...getAuthorizationHeaders(apiKey),
       },
       signal,
     });

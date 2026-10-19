@@ -1,6 +1,7 @@
 // Copyright (c) 2025 hotflow2024
 // Licensed under AGPL-3.0-or-later. See LICENSE for details.
 // Commercial licensing available. See COMMERCIAL_LICENSE.md.
+import { getAuthorizationHeaders } from '@/lib/provider-config';
 import { useCharacterLibraryStore } from "@/stores/character-library-store";
 import { getFeatureConfig } from "@/lib/ai/feature-router";
 import { imageUrlToBase64, submitGridImageRequest } from "@/lib/ai/image-generator";
@@ -104,8 +105,8 @@ export async function callImageGenerationApi(
   if (!model) {
     throw new Error('请先在设置中配置图片生成模型');
   }
-  const apiKeyToUse = apiKey || featureConfig.keyManager?.getCurrentKey?.() || '';
-  if (!apiKeyToUse) {
+  const apiKeyToUse = featureConfig.keyManager.getCurrentKey();
+  if (apiKeyToUse === null) {
     throw new Error('请先在设置中配置图片生成服务映射');
   }
   const imageBaseUrl = featureConfig.baseUrl?.replace(/\/+$/, '');
@@ -154,7 +155,7 @@ export async function callImageGenerationApi(
       const statusResponse = await fetch(url.toString(), {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${apiKeyToUse}`,
+          ...getAuthorizationHeaders(apiKeyToUse),
           'Cache-Control': 'no-cache',
         },
         signal,

@@ -8,6 +8,7 @@
  * Features: smart endpoint routing, retry with exponential backoff
  */
 
+import { getAuthorizationHeaders, isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from '@/lib/provider-config';
 import {
   getAllFeatureConfigs,
   getFeatureConfig,
@@ -348,9 +349,12 @@ async function _generateFreedomImageInner(
 
   const { baseUrl, model: defaultModel } = config;
   // 每次重试动态取当前 key（利用 keyManager rotate 后的新 key）
-  const apiKey = config.keyManager?.getCurrentKey?.() || config.apiKey;
+  const apiKey = config.keyManager ? config.keyManager.getCurrentKey() : config.apiKey;
+  if (apiKey === null) throw new Error('No API keys available');
   // 模型 ID 直接透传：UI 选的就是供应商原始 ID，无需转换
   const model = params.model || defaultModel;
+  if (!baseUrl?.trim()) throw new Error('请先在设置中配置生成服务地址');
+  if (!model?.trim()) throw new Error('请先在设置中配置生成模型');
   const normalizedBase = baseUrl.replace(/\/+$/, '');
 
   // ── Smart Routing: choose endpoint based on model metadata ──
@@ -409,7 +413,7 @@ async function generateViaChatCompletions(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: JSON.stringify(requestBody),
   });
@@ -498,7 +502,7 @@ async function generateViaImagesEndpoint(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: JSON.stringify(body),
   });
@@ -566,7 +570,7 @@ async function generateViaKlingImagesEndpoint(
   try {
     response = await fetch(`${rootBase}/${nativePath}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      headers: { 'Content-Type': 'application/json', ...getAuthorizationHeaders(apiKey) },
       body: JSON.stringify(body),
     });
   } catch {
@@ -655,7 +659,7 @@ async function generateViaMidjourneyEndpoint(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: JSON.stringify(requestBody),
   });
@@ -675,7 +679,7 @@ async function generateViaMidjourneyEndpoint(
   for (let i = 0; i < IMAGE_POLL_MAX_ATTEMPTS; i++) {
     await new Promise((r) => setTimeout(r, 2500));
     const pollResp = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { ...getAuthorizationHeaders(apiKey) },
     });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();
@@ -758,7 +762,7 @@ async function generateViaIdeogramEndpoint(
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: form,
   });
@@ -798,7 +802,7 @@ async function generateViaReplicateImageEndpoint(
 
   const submitResp = await fetch(submitUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    headers: { 'Content-Type': 'application/json', ...getAuthorizationHeaders(apiKey) },
     body: JSON.stringify({ model, input }),
   });
   if (!submitResp.ok) {
@@ -819,7 +823,7 @@ async function generateViaReplicateImageEndpoint(
   for (let i = 0; i < IMAGE_POLL_MAX_ATTEMPTS; i++) {
     await new Promise(r => setTimeout(r, IMAGE_POLL_INTERVAL));
     const pollResp = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { ...getAuthorizationHeaders(apiKey) },
     });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();
@@ -843,6 +847,9 @@ export async function generateFreedomVideo(
   params: FreedomVideoParams
 ): Promise<GenerationResult> {
   const { config } = resolveFreedomFeatureConfig('freedom_video', 'video_generation', params.model);
+  if (config && isComfyUIProvider(config.provider)) {
+    throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+  }
   return freedomRetry(() => _generateFreedomVideoInner(params), 'Video generation', config?.keyManager);
 }
 
@@ -859,13 +866,19 @@ async function _generateFreedomVideoInner(
     toast.error('自由板块视频生成未配置：请在设置中配置「自由板块-视频」或「视频生成」服务映射');
     throw new Error(msg);
   }
+  if (isComfyUIProvider(config.provider)) {
+    throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+  }
   console.log(`[Freedom] Video config source: ${configSource}`);
 
   const { baseUrl, model: defaultModel } = config;
   // 每次重试动态取当前 key（利用 keyManager rotate 后的新 key）
-  const apiKey = config.keyManager?.getCurrentKey?.() || config.apiKey;
+  const apiKey = config.keyManager ? config.keyManager.getCurrentKey() : config.apiKey;
+  if (apiKey === null) throw new Error('No API keys available');
   // 模型 ID 直接透传：UI 选的就是供应商原始 ID，无需转换
   const model = params.model || defaultModel;
+  if (!baseUrl?.trim()) throw new Error('请先在设置中配置生成服务地址');
+  if (!model?.trim()) throw new Error('请先在设置中配置生成模型');
 
   const endpointTypes = useAPIConfigStore.getState().modelEndpointTypes[model];
   const route = detectFreedomVideoRoute(model, endpointTypes);
@@ -1124,7 +1137,7 @@ async function generateVideoViaOpenAIOfficial(
 
   const submitResp = await fetch(endpoint, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}` },
+    headers: { ...getAuthorizationHeaders(apiKey) },
     body: form,
   });
   if (!submitResp.ok) {
@@ -1141,7 +1154,7 @@ async function generateVideoViaOpenAIOfficial(
   for (let i = 0; i < VIDEO_POLL_MAX_ATTEMPTS; i++) {
     await new Promise((r) => setTimeout(r, VIDEO_POLL_INTERVAL));
     const pollResp = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { ...getAuthorizationHeaders(apiKey) },
     });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();
@@ -1234,7 +1247,7 @@ async function generateVideoViaUnified(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: JSON.stringify(body),
   });
@@ -1266,7 +1279,7 @@ async function generateVideoViaUnified(
   for (let i = 0; i < VIDEO_POLL_MAX_ATTEMPTS; i++) {
     await new Promise((r) => setTimeout(r, VIDEO_POLL_INTERVAL));
     const pollResp = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { ...getAuthorizationHeaders(apiKey) },
     });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();
@@ -1317,7 +1330,7 @@ async function generateVideoViaVolc(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: JSON.stringify(body),
   });
@@ -1333,7 +1346,7 @@ async function generateVideoViaVolc(
   for (let i = 0; i < VIDEO_POLL_MAX_ATTEMPTS; i++) {
     await new Promise((r) => setTimeout(r, VIDEO_POLL_INTERVAL));
     const pollResp = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { ...getAuthorizationHeaders(apiKey) },
     });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();
@@ -1375,7 +1388,7 @@ async function generateVideoViaWan(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        ...getAuthorizationHeaders(apiKey),
       },
       body: JSON.stringify(body),
     },
@@ -1392,7 +1405,7 @@ async function generateVideoViaWan(
   for (let i = 0; i < VIDEO_POLL_MAX_ATTEMPTS; i++) {
     await new Promise((r) => setTimeout(r, VIDEO_POLL_INTERVAL));
     const pollResp = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { ...getAuthorizationHeaders(apiKey) },
     });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();
@@ -1465,7 +1478,7 @@ async function generateVideoViaKling(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: JSON.stringify(body),
   });
@@ -1482,7 +1495,7 @@ async function generateVideoViaKling(
   for (let i = 0; i < VIDEO_POLL_MAX_ATTEMPTS; i++) {
     await new Promise((r) => setTimeout(r, VIDEO_POLL_INTERVAL));
     const pollResp = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { ...getAuthorizationHeaders(apiKey) },
     });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();
@@ -1530,7 +1543,7 @@ async function generateVideoViaReplicate(
 
   const submitResp = await fetch(submitUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    headers: { 'Content-Type': 'application/json', ...getAuthorizationHeaders(apiKey) },
     body: JSON.stringify({ model, input }),
   });
   if (!submitResp.ok) {
@@ -1548,7 +1561,7 @@ async function generateVideoViaReplicate(
   for (let i = 0; i < VIDEO_POLL_MAX_ATTEMPTS; i++) {
     await new Promise(r => setTimeout(r, VIDEO_POLL_INTERVAL));
     const pollResp = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { ...getAuthorizationHeaders(apiKey) },
     });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();
@@ -1611,7 +1624,7 @@ async function pollForResult(
 
     try {
       const response = await fetch(pollUrl, {
-        headers: { 'Authorization': `Bearer ${apiKey}` },
+        headers: { ...getAuthorizationHeaders(apiKey) },
       });
 
       if (!response.ok) continue;

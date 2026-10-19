@@ -21,6 +21,7 @@ import {
 } from '@/lib/api-key-manager';
 import { injectDiscoveryCache, type DiscoveredModelLimits } from '@/lib/ai/model-registry';
 import { corsFetch } from '@/lib/cors-fetch';
+import { getAuthorizationHeaders, isComfyUIProvider, isProviderConfigured, isProviderKeyOptional } from '@/lib/provider-config';
 
 // Re-export IProvider for convenience
 export type { IProvider } from '@/lib/api-key-manager';
@@ -554,7 +555,7 @@ export const useAPIConfigStore = create<APIConfigStore>()(
           providers: [...state.providers, newProvider],
         }));
         // Update key manager
-        updateProviderKeys(newProvider.id, newProvider.apiKey);
+        updateProviderKeys(newProvider.id, newProvider.apiKey, undefined, isProviderKeyOptional(newProvider));
         console.log(`[APIConfig] Added provider: ${newProvider.name}`);
         return newProvider;
       },
@@ -564,7 +565,7 @@ export const useAPIConfigStore = create<APIConfigStore>()(
           providers: state.providers.map(p => p.id === provider.id ? provider : p),
         }));
         // Update key manager
-        updateProviderKeys(provider.id, provider.apiKey);
+        updateProviderKeys(provider.id, provider.apiKey, undefined, isProviderKeyOptional(provider));
         console.log(`[APIConfig] Updated provider: ${provider.name}`);
       },
 
@@ -590,11 +591,26 @@ export const useAPIConfigStore = create<APIConfigStore>()(
         const provider = get().providers.find(p => p.id === providerId);
         if (!provider) return { success: false, count: 0, error: '供应商不存在' };
 
-        const keys = parseApiKeys(provider.apiKey);
-        if (keys.length === 0) return { success: false, count: 0, error: '请先配置 API Key' };
+        if (isComfyUIProvider(provider)) {
+          return {
+            success: false,
+            count: provider.model.length,
+            error: 'ComfyUI 使用原生工作流协议，不支持 /v1/models 同步；已保留手工配置的工作流列表。当前尚未接入 ComfyUI 视频工作流。',
+          };
+        }
+        if (!isProviderConfigured(provider)) {
+          return {
+            success: false,
+            count: 0,
+            error: !isProviderKeyOptional(provider) && parseApiKeys(provider.apiKey).length === 0
+              ? '请先配置 API Key'
+              : '请先配置有效的 HTTP(S) Base URL',
+          };
+        }
 
-        const baseUrl = provider.baseUrl?.replace(/\/+$/, '');
-        if (!baseUrl) return { success: false, count: 0, error: 'Base URL 未配置' };
+        const keys = parseApiKeys(provider.apiKey);
+        const requestKeys = keys.length > 0 ? keys : [undefined];
+        const baseUrl = provider.baseUrl.trim().replace(/\/+$/, '');
 
         try {
           // 用 Set 收集所有 key 的模型，自动去重
@@ -655,10 +671,10 @@ export const useAPIConfigStore = create<APIConfigStore>()(
               ? `${baseUrl}/models`
               : `${baseUrl}/v1/models`;
 
-            for (let ki = 0; ki < keys.length; ki++) {
+            for (let ki = 0; ki < requestKeys.length; ki++) {
               try {
                 const resp = await corsFetch(modelsUrl, {
-                  headers: { 'Authorization': `Bearer ${keys[ki]}` },
+                  headers: getAuthorizationHeaders(requestKeys[ki]),
                 });
                 if (!resp.ok) {
                   console.warn(`[APIConfig] MemeFast key#${ki + 1} /v1/models returned ${resp.status}, skip`);
@@ -681,7 +697,7 @@ export const useAPIConfigStore = create<APIConfigStore>()(
               }
             }
           } else {
-            // Standard OpenAI-compatible: 遍历每个 key 查 /v1/models，合并去重
+            // Standard OpenAI-compatible: merge each key's models, or make one unauthenticated request.
             const modelsUrl = /\/v\d+$/.test(baseUrl)
               ? `${baseUrl}/models`
               : `${baseUrl}/v1/models`;
@@ -690,10 +706,10 @@ export const useAPIConfigStore = create<APIConfigStore>()(
             let anySuccess = false;
             let lastError = '';
 
-            for (let ki = 0; ki < keys.length; ki++) {
+            for (let ki = 0; ki < requestKeys.length; ki++) {
               try {
                 const response = await corsFetch(modelsUrl, {
-                  headers: { 'Authorization': `Bearer ${keys[ki]}` },
+                  headers: getAuthorizationHeaders(requestKeys[ki]),
                 });
 
                 if (!response.ok) {
@@ -857,7 +873,7 @@ export const useAPIConfigStore = create<APIConfigStore>()(
               console.warn(`[APIConfig] Ambiguous platform binding "${binding}" matches ${platformMatches.length} providers, skipping`);
             }
           }
-          if (!provider || parseApiKeys(provider.apiKey).length === 0) {
+          if (!provider || !isProviderConfigured(provider)) {
             continue;
           }
 
@@ -1047,19 +1063,21 @@ export const useAPIConfigStore = create<APIConfigStore>()(
       // ==================== Validation ====================
       
       isConfigured: (provider) => {
-        // Check v2 providers first
-        const prov = get().getProviderByPlatform(provider);
-        if (prov) {
-          return parseApiKeys(prov.apiKey).length > 0;
+        const matches = get().providers.filter(p => p.platform === provider);
+        if (matches.length > 0) {
+          return matches.some(isProviderConfigured);
         }
-        // Fallback to legacy
-        const key = get().apiKeys[provider];
-        return !!key && key.length > 0;
+        // Legacy keys still need a known preset endpoint to form a usable configuration.
+        const template = DEFAULT_PROVIDERS.find(p => p.platform === provider);
+        return !!template && isProviderConfigured({
+          ...template,
+          id: provider,
+          apiKey: get().apiKeys[provider] || '',
+        });
       },
 
       isPlatformConfigured: (platform) => {
-        const provider = get().getProviderByPlatform(platform);
-        return !!provider && parseApiKeys(provider.apiKey).length > 0;
+        return get().providers.some(provider => provider.platform === platform && isProviderConfigured(provider));
       },
 
       checkRequiredKeys: (services) => {

@@ -18,6 +18,7 @@
 
 import { useAPIConfigStore, type AIFeature, type IProvider, AI_FEATURES } from '@/stores/api-config-store';
 import { parseApiKeys, getProviderKeyManager, ApiKeyManager } from '@/lib/api-key-manager';
+import { isProviderConfigured, isProviderKeyOptional } from '@/lib/provider-config';
 
 export interface FeatureConfig {
   feature: AIFeature;
@@ -113,16 +114,16 @@ export function getAllFeatureConfigs(feature: AIFeature): FeatureConfig[] {
   
   for (const { provider, model } of providersWithModels) {
     const keys = parseApiKeys(provider.apiKey);
-    if (keys.length === 0) continue;
+    if (!isProviderConfigured(provider)) continue;
     
     const scopeKey = `${feature}:${model || 'default'}`;
-    const keyManager = getProviderKeyManager(provider.id, provider.apiKey, scopeKey);
+    const keyManager = getProviderKeyManager(provider.id, provider.apiKey, scopeKey, isProviderKeyOptional(provider));
     
     configs.push({
       feature,
       featureName: featureInfo?.name || feature,
       provider,
-      apiKey: keyManager.getCurrentKey() || keys[0],
+      apiKey: keyManager.getCurrentKey() ?? keys[0] ?? '',
       allApiKeys: keys,
       keyManager,
       platform: provider.platform,
@@ -152,10 +153,10 @@ export function getFeatureConfig(feature: AIFeature): FeatureConfig | null {
       const provider = store.providers.find(p => p.platform === defaultPlatform);
       if (provider) {
         const keys = parseApiKeys(provider.apiKey);
-        if (keys.length > 0) {
+        if (isProviderConfigured(provider)) {
           const fallbackModel = FEATURE_DEFAULT_MODEL[feature]?.[provider.platform] || provider.model?.[0] || '';
           const scopeKey = `${feature}:${fallbackModel || 'default'}`;
-          const keyManager = getProviderKeyManager(provider.id, provider.apiKey, scopeKey);
+          const keyManager = getProviderKeyManager(provider.id, provider.apiKey, scopeKey, isProviderKeyOptional(provider));
           const featureInfo = AI_FEATURES.find(f => f.key === feature);
           // 优先使用功能默认模型，否则取供应商第一个模型
           const defaultModel = FEATURE_DEFAULT_MODEL[feature]?.[provider.platform];
@@ -164,7 +165,7 @@ export function getFeatureConfig(feature: AIFeature): FeatureConfig | null {
             feature,
             featureName: featureInfo?.name || feature,
             provider,
-            apiKey: keyManager.getCurrentKey() || keys[0],
+            apiKey: keyManager.getCurrentKey() ?? keys[0] ?? '',
             allApiKeys: keys,
             keyManager,
             platform: provider.platform,
@@ -303,17 +304,17 @@ export function useFeatureConfig(feature: AIFeature): FeatureConfig | null {
   if (!provider) return null;
   
   const keys = parseApiKeys(provider.apiKey);
-  if (keys.length === 0) return null;
+  if (!isProviderConfigured(provider)) return null;
   
   const featureInfo = AI_FEATURES.find(f => f.key === feature);
   const model = provider.model?.[0] || '';
-  const keyManager = getProviderKeyManager(provider.id, provider.apiKey, `${feature}:${model || 'default'}`);
+  const keyManager = getProviderKeyManager(provider.id, provider.apiKey, `${feature}:${model || 'default'}`, isProviderKeyOptional(provider));
   
   return {
     feature,
     featureName: featureInfo?.name || feature,
     provider,
-    apiKey: keyManager.getCurrentKey() || keys[0],
+    apiKey: keyManager.getCurrentKey() ?? keys[0] ?? '',
     allApiKeys: keys,
     keyManager,
     platform: provider.platform,

@@ -2,6 +2,12 @@
 // Licensed under AGPL-3.0-or-later. See LICENSE for details.
 // Commercial licensing available. See COMMERCIAL_LICENSE.md.
 import { ipcRenderer, contextBridge } from 'electron'
+import type { ApiFetchBridge } from '../src/types/api-fetch'
+
+contextBridge.exposeInMainWorld('apiFetch', {
+  request: (request) => ipcRenderer.invoke('api-fetch', request),
+  abort: (id) => ipcRenderer.send('api-fetch-abort', id),
+} satisfies ApiFetchBridge)
 
 // --------- Expose some API to the Renderer process ---------
 contextBridge.exposeInMainWorld('ipcRenderer', {

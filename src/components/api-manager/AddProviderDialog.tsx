@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import type { IProvider } from "@/lib/api-key-manager";
+import { isProviderKeyOptional } from "@/lib/provider-config";
 
 /**
  * 平台预设配置
@@ -106,6 +107,7 @@ export function AddProviderDialog({
   // Get selected preset
   const selectedPreset = PLATFORM_PRESETS.find((p) => p.platform === platform);
   const isCustom = platform === "custom";
+  const keyOptional = isProviderKeyOptional({ platform });
 
   // Reset form when dialog opens
   useEffect(() => {
@@ -143,7 +145,7 @@ export function AddProviderDialog({
       toast.error("自定义平台需要输入 Base URL");
       return;
     }
-    if (!apiKey.trim()) {
+    if (!keyOptional && !apiKey.trim()) {
       toast.error("请输入 API Key");
       return;
     }
@@ -229,12 +231,12 @@ export function AddProviderDialog({
 
           {/* API Key */}
           <div className="space-y-2">
-            <Label>API Key</Label>
+            <Label>API Key{keyOptional ? " (可选)" : ""}</Label>
             <Input
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder="输入 API Key"
+              placeholder={keyOptional ? "无需鉴权时可留空" : "输入 API Key"}
               className="font-mono"
             />
             <p className="text-xs text-muted-foreground">

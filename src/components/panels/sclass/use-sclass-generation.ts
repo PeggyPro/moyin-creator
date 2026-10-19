@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useRef } from "react";
+import { isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from "@/lib/provider-config";
 import { toast } from "sonner";
 import {
   useSClassStore,
@@ -164,7 +165,7 @@ export function useSClassGeneration() {
       }
 
       const keyManager = featureConfig.keyManager;
-      if (!keyManager.getCurrentKey()) {
+      if (keyManager.getCurrentKey() === null) {
         return {
           groupId: group.id,
           success: false,
@@ -202,7 +203,10 @@ export function useSClassGeneration() {
       });
 
       try {
-      // 4. 从组内分镜聚合音频/运镜设置
+        if (isComfyUIProvider(featureConfig.provider)) {
+          throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+        }
+        // 4. 从组内分镜聚合音频/运镜设置
         const isExtendOrEdit = group.generationType === 'extend' || group.generationType === 'edit';
         const hasAnyDialogue = groupScenes.some(s => s.audioDialogueEnabled !== false && s.dialogue?.trim());
         const hasAnyAmbient = groupScenes.some(s => s.audioAmbientEnabled !== false);
@@ -354,8 +358,8 @@ export function useSClassGeneration() {
         let lastVideoError: Error | null = null;
 
         for (let attempt = 0; attempt < maxVideoAttempts; attempt++) {
-          const currentApiKey = keyManager.getCurrentKey() || "";
-          if (!currentApiKey) break;
+          const currentApiKey = keyManager.getCurrentKey();
+          if (currentApiKey === null) break;
 
           try {
             videoUrl = await callVideoGenerationApi(
@@ -378,6 +382,8 @@ export function useSClassGeneration() {
               audioRefUrls.length > 0 ? audioRefUrls : undefined,
               enableAudio,
               allStaticCamera,
+              undefined, // signal
+              featureConfig,
             );
             lastVideoError = null;
             break;
@@ -609,7 +615,7 @@ export function useSClassGeneration() {
       }
 
       const keyManager = featureConfig.keyManager;
-      if (!keyManager.getCurrentKey()) {
+      if (keyManager.getCurrentKey() === null) {
         toast.error("请先在设置中配置视频生成 API Key");
         return false;
       }
@@ -630,6 +636,9 @@ export function useSClassGeneration() {
       });
 
       try {
+        if (isComfyUIProvider(featureConfig.provider)) {
+          throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+        }
         // 构建 imageWithRoles
         const firstFrameUrl = scene.imageDataUrl || scene.imageHttpUrl || undefined;
         const imageWithRoles = await buildImageWithRoles(
@@ -648,8 +657,8 @@ export function useSClassGeneration() {
         let lastVideoError: Error | null = null;
 
         for (let attempt = 0; attempt < maxVideoAttempts; attempt++) {
-          const currentApiKey = keyManager.getCurrentKey() || "";
-          if (!currentApiKey) break;
+          const currentApiKey = keyManager.getCurrentKey();
+          if (currentApiKey === null) break;
 
           try {
             videoUrl = await callVideoGenerationApi(
@@ -663,7 +672,13 @@ export function useSClassGeneration() {
               },
               keyManager,
               featureConfig.platform,
-              singleVideoRes
+              singleVideoRes,
+              undefined, // videoRefs
+              undefined, // audioRefs
+              undefined, // enableAudio
+              undefined, // cameraFixed
+              undefined, // signal
+              featureConfig,
             );
             lastVideoError = null;
             break;

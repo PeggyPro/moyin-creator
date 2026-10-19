@@ -12,7 +12,8 @@
 
 import { useMemo, useState } from "react";
 import { useAPIConfigStore, type AIFeature } from "@/stores/api-config-store";
-import { parseApiKeys, classifyModelByName, type ModelCapability } from "@/lib/api-key-manager";
+import { classifyModelByName, type ModelCapability } from "@/lib/api-key-manager";
+import { isProviderConfigured } from "@/lib/provider-config";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -255,18 +256,16 @@ export function FeatureBindingPanel() {
   const configuredProviderIds = useMemo(() => {
     const set = new Set<string>();
     for (const p of providers) {
-      if (parseApiKeys(p.apiKey).length > 0) {
+      if (isProviderConfigured(p)) {
         set.add(p.id);
-        // 也把 platform 加进去，以兼容旧数据检查
-        set.add(p.platform);
+        // 仅兼容可唯一解析的旧 platform 绑定，避免界面与运行层状态不一致。
+        if (providers.filter(provider => provider.platform === p.platform).length === 1) {
+          set.add(p.platform);
+        }
       }
     }
     return set;
   }, [providers]);
-
-  const isProviderConfigured = (providerIdOrPlatform: string): boolean => {
-    return configuredProviderIds.has(providerIdOrPlatform);
-  };
 
   const optionsByFeature = useMemo(() => {
     const map: Partial<Record<AIFeature, ProviderOption[]>> = {};
@@ -295,8 +294,8 @@ export function FeatureBindingPanel() {
 
       // Prefer configured providers first for better UX.
       opts.sort((a, b) => {
-        const aConfigured = isProviderConfigured(a.providerId);
-        const bConfigured = isProviderConfigured(b.providerId);
+        const aConfigured = configuredProviderIds.has(a.providerId);
+        const bConfigured = configuredProviderIds.has(b.providerId);
         if (aConfigured !== bConfigured) return aConfigured ? -1 : 1;
         if (a.name !== b.name) return a.name.localeCompare(b.name);
         return a.model.localeCompare(b.model);
@@ -320,7 +319,7 @@ export function FeatureBindingPanel() {
         const parsed = parseOptionKey(binding);
         if (!parsed) return false;
         const existsInOptions = options.some((o) => getOptionKey(o) === binding || (`${o.platform}:${o.model}` === binding));
-        return existsInOptions && isProviderConfigured(parsed.providerIdOrPlatform);
+        return existsInOptions && configuredProviderIds.has(parsed.providerIdOrPlatform);
       });
     }).length;
   }, [optionsByFeature, configuredProviderIds, getFeatureBindings]);
@@ -403,7 +402,7 @@ export function FeatureBindingPanel() {
           const currentBindings = getFeatureBindings(feature.key);
           const isExpanded = expandedFeatures.has(feature.key);
           const selectableOptionKeys = options
-            .filter((o) => isProviderConfigured(o.providerId))
+            .filter((o) => configuredProviderIds.has(o.providerId))
             .map((o) => getOptionKey(o));
           const selectedSelectableCount = selectableOptionKeys.filter((k) => currentBindings.includes(k) || currentBindings.includes(`${options.find(o => getOptionKey(o) === k)?.platform}:${options.find(o => getOptionKey(o) === k)?.model}`)).length;
           const isAllSelected =
@@ -431,7 +430,7 @@ export function FeatureBindingPanel() {
               continue;
             }
             const existsInOptions = options.some((o) => getOptionKey(o) === binding || (`${o.platform}:${o.model}` === binding));
-            if (existsInOptions && isProviderConfigured(parsed.providerIdOrPlatform)) {
+            if (existsInOptions && configuredProviderIds.has(parsed.providerIdOrPlatform)) {
               validBindings.push(binding);
             } else {
               invalidBindings.push(binding);
@@ -673,7 +672,7 @@ export function FeatureBindingPanel() {
                               ) : (
                                 filteredOptions.map((option) => {
                                   const optionKey = getOptionKey(option);
-                                  const optionConfigured = isProviderConfigured(option.providerId);
+                                  const optionConfigured = configuredProviderIds.has(option.providerId);
                                   const legacyKey = `${option.platform}:${option.model}`;
                                   const isSelected = currentBindings.includes(optionKey) || currentBindings.includes(legacyKey);
                                   const brandId = extractBrandFromModel(option.model);
@@ -727,7 +726,7 @@ export function FeatureBindingPanel() {
               部分服务未配置
             </p>
             <p className="text-muted-foreground mt-1">
-              请在上方为每个功能选择「供应商/模型」，并确保对应供应商已填写 API Key。
+              请在上方为每个功能选择「供应商/模型」，并确保供应商 Base URL 有效；需要鉴权的供应商还须填写 API Key。
             </p>
           </div>
         </div>

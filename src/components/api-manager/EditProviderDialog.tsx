@@ -23,6 +23,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import type { IProvider } from "@/lib/api-key-manager";
 import { getApiKeyCount } from "@/lib/api-key-manager";
+import { isProviderKeyOptional } from "@/lib/provider-config";
 
 interface EditProviderDialogProps {
   open: boolean;
@@ -80,6 +81,7 @@ export function EditProviderDialog({
   };
 
   const keyCount = getApiKeyCount(apiKey);
+  const keyOptional = provider ? isProviderKeyOptional(provider) : false;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -118,7 +120,7 @@ export function EditProviderDialog({
           {/* API Keys */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <Label>API Keys</Label>
+              <Label>API Keys{keyOptional ? " (可选)" : ""}</Label>
               <span className="text-xs text-muted-foreground">
                 {keyCount} 个 Key
               </span>
@@ -126,7 +128,7 @@ export function EditProviderDialog({
             <Textarea
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder="输入 API Keys（每行一个，或用逗号分隔）"
+              placeholder={keyOptional ? "无需鉴权时可留空；多个 Key 每行一个或用逗号分隔" : "输入 API Keys（每行一个，或用逗号分隔）"}
               className="font-mono text-sm min-h-[100px]"
             />
             <p className="text-xs text-muted-foreground">

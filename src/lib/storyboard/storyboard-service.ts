@@ -8,6 +8,7 @@
  * For Electron desktop app: directly calls external APIs (MemeFast)
  */
 
+import { getAuthorizationHeaders, isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from '@/lib/provider-config';
 import { buildStoryboardPrompt, getDefaultNegativePrompt, type StoryboardPromptConfig, type CharacterInfo } from './prompt-builder';
 import { calculateGrid, type AspectRatio, type Resolution, RESOLUTION_PRESETS } from './grid-calculator';
 import { retryOperation } from "@/lib/utils/retry";
@@ -105,7 +106,7 @@ async function submitImageGenTask(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
+          ...getAuthorizationHeaders(apiKey),
         },
         body: requestBody,
         signal: controller.signal,
@@ -203,7 +204,7 @@ async function submitZhipuImageTask(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      ...getAuthorizationHeaders(apiKey),
     },
     body: JSON.stringify({
       model,
@@ -268,7 +269,7 @@ async function pollTaskCompletion(
       const response = await fetch(url.toString(), {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          ...getAuthorizationHeaders(apiKey),
           'Cache-Control': 'no-cache, no-store, must-revalidate',
           'Pragma': 'no-cache',
         },
@@ -425,11 +426,6 @@ export async function generateStoryboardImage(
     };
   }
 
-  // Validate API key
-  if (!apiKey) {
-    throw new Error('璇峰厛鍦ㄨ缃腑閰嶇疆 API Key');
-  }
-
   onProgress?.(10);
 
   // Submit image generation task with smart API format routing
@@ -571,7 +567,7 @@ async function submitVideoGenTask(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        ...getAuthorizationHeaders(apiKey),
       },
       body: JSON.stringify(requestBody),
     });
@@ -679,9 +675,12 @@ export async function generateSceneVideos(
     characterReferenceImages = [],
   } = config;
 
-  // Validate API key
-  if (!apiKey && !mockMode) {
-    throw new Error('璇峰厛鍦ㄨ缃腑閰嶇疆 API Key');
+  if (!mockMode) {
+    if (isComfyUIProvider({ platform: provider, baseUrl: baseUrl || '', model: model ? [model] : [] })) {
+      throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
+    }
+    if (!baseUrl?.trim()) throw new Error('请先在设置中配置视频生成服务映射');
+    if (!model?.trim()) throw new Error('请先在设置中配置视频生成模型');
   }
 
   // Process scenes sequentially with rate limiting

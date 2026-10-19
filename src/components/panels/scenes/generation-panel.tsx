@@ -860,7 +860,7 @@ ${gridItemsZh}
     const model = featureConfig.models?.[0] || '';
     const keyManager = featureConfig.keyManager;
 
-    if (!apiKey || !baseUrl || !model) {
+    if (!baseUrl || !model) {
       toast.error('图片生成 API 未配置');
       return;
     }
@@ -1539,7 +1539,7 @@ ${gridItemsZh}
         const model = autoFeatureConfig.models?.[0] || '';
         const keyManager = autoFeatureConfig.keyManager;
 
-        if (!apiKey || !baseUrl || !model) {
+        if (!baseUrl || !model) {
           throw new Error('图片生成 API 未配置');
         }
 

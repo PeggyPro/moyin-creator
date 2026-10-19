@@ -26,5 +26,6 @@ declare namespace NodeJS {
 
 // Used in Renderer process, expose in `preload.ts`
 interface Window {
+  apiFetch?: import('../src/types/api-fetch').ApiFetchBridge
   ipcRenderer: import('electron').IpcRenderer
 }

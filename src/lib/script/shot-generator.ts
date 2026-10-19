@@ -6,6 +6,7 @@
  * Generates images and videos for individual shots using AI APIs
  */
 
+import { getAuthorizationHeaders, isComfyUIProvider, COMFYUI_VIDEO_UNSUPPORTED_MESSAGE } from '@/lib/provider-config';
 import type { Shot } from "@/types/script";
 import { retryOperation } from "@/lib/utils/retry";
 import { delay, RATE_LIMITS } from "@/lib/utils/rate-limiter";
@@ -56,7 +57,7 @@ async function pollTaskStatus(
       const response = await fetch(url.toString(), {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          ...getAuthorizationHeaders(apiKey),
           'Cache-Control': 'no-cache',
         },
       });
@@ -138,9 +139,6 @@ export async function generateShotImage(
 ): Promise<string> {
   const { apiKey, baseUrl, model, aspectRatio = '16:9', styleTokens = [], referenceImages = [] } = config;
 
-  if (!apiKey) {
-    throw new Error('API Key is required');
-  }
   if (!baseUrl) {
     throw new Error('Base URL is required');
   }
@@ -182,7 +180,7 @@ export async function generateShotImage(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        ...getAuthorizationHeaders(apiKey),
       },
       body: JSON.stringify(requestData),
     });
@@ -239,10 +237,10 @@ export async function generateShotVideo(
   onProgress?: (progress: number) => void
 ): Promise<string> {
   const { apiKey, baseUrl, model, aspectRatio = '16:9', referenceImages = [] } = config;
-
-  if (!apiKey) {
-    throw new Error('API Key is required');
+  if (isComfyUIProvider({ platform: config.provider || '', baseUrl, model: [model] })) {
+    throw new Error(COMFYUI_VIDEO_UNSUPPORTED_MESSAGE);
   }
+
   if (!baseUrl) {
     throw new Error('Base URL is required');
   }
@@ -290,7 +288,7 @@ export async function generateShotVideo(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        ...getAuthorizationHeaders(apiKey),
       },
       body: JSON.stringify(requestBody),
     });

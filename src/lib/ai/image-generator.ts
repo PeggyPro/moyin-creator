@@ -7,6 +7,8 @@
  * Uses same API logic as storyboard-service.ts
  */
 
+import { corsFetch } from '@/lib/cors-fetch';
+import { getAuthorizationHeaders } from '@/lib/provider-config';
 import { getFeatureConfig, getFeatureNotConfiguredMessage } from '@/lib/ai/feature-router';
 import { retryOperation } from '@/lib/utils/retry';
 import { resolveImageApiFormat } from '@/lib/api-key-manager';
@@ -32,6 +34,15 @@ const buildEndpoint = (baseUrl: string, path: string) => {
   const normalized = baseUrl.replace(/\/+$/, '');
   return /\/v\d+$/.test(normalized) ? `${normalized}/${path}` : `${normalized}/v1/${path}`;
 };
+
+function getRequestApiKey(
+  apiKey: string,
+  keyManager?: { getCurrentKey?: () => string | null },
+): string {
+  const key = keyManager?.getCurrentKey ? keyManager.getCurrentKey() : apiKey;
+  if (key === null) throw new Error('No API keys available');
+  return key;
+}
 
 const getRootBaseUrl = (baseUrl: string): string => {
   return baseUrl.replace(/\/+$/, '').replace(/\/v\d+$/, '');
@@ -165,7 +176,7 @@ async function generateImage(
   const apiKey = featureConfig.apiKey;
   const baseUrl = featureConfig.baseUrl?.replace(/\/+$/, '');
   const model = featureConfig.models?.[0];
-  if (!apiKey || !baseUrl || !model) {
+  if (!baseUrl || !model) {
     throw new Error(getFeatureNotConfiguredMessage(feature));
   }
 
@@ -368,14 +379,14 @@ async function submitViaChatCompletions(
     }
 
     // 每次重试动态取当前 key（利用 keyManager rotate 后的新 key）
-    const currentApiKey = keyManager?.getCurrentKey?.() || apiKey;
+    const currentApiKey = getRequestApiKey(apiKey, keyManager);
 
     try {
-      const resp = await fetch(endpoint, {
+      const resp = await corsFetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${currentApiKey}`,
+          ...getAuthorizationHeaders(currentApiKey),
         },
         body: JSON.stringify(requestBody),
         signal: controller.signal,
@@ -574,16 +585,16 @@ async function submitImageTask(
       const timeoutId = setTimeout(() => controller.abort(), 60000);
 
       // 每次重试动态取当前 key（利用 keyManager rotate 后的新 key）
-      const currentApiKey = keyManager?.getCurrentKey?.() || apiKey;
+      const currentApiKey = getRequestApiKey(apiKey, keyManager);
       const imagePaths = getImageEndpointPaths(endpointTypes || []);
       const rootBase = getRootBaseUrl(baseUrl);
       const endpoint = `${rootBase}${imagePaths.submit}`;
       try {
-        const response = await fetch(endpoint, {
+        const response = await corsFetch(endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${currentApiKey}`,
+            ...getAuthorizationHeaders(currentApiKey),
           },
           body: JSON.stringify(requestData),
           signal: controller.signal,
@@ -714,10 +725,10 @@ async function pollTaskStatus(
       const url = new URL(rawUrl);
       url.searchParams.set('_ts', Date.now().toString());
 
-      const response = await fetch(url.toString(), {
+      const response = await corsFetch(url.toString(), {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          ...getAuthorizationHeaders(apiKey),
           'Cache-Control': 'no-cache',
         },
       });
@@ -790,6 +801,8 @@ export async function submitGridImageRequest(params: {
   signal?: AbortSignal;
 }): Promise<{ imageUrl?: string; taskId?: string; pollUrl?: string }> {
   const { model, prompt, apiKey, baseUrl, aspectRatio, resolution, referenceImages, keyManager, signal } = params;
+  if (!baseUrl?.trim()) throw new Error('请先在设置中配置图片生成服务映射');
+  if (!model?.trim()) throw new Error('请先在设置中配置图片生成模型');
   const normalizedBase = baseUrl.replace(/\/+$/, '');
 
   // 检测 API 格式（与 generateImage 一致）
@@ -829,13 +842,13 @@ export async function submitGridImageRequest(params: {
 
   const data = await retryOperation(async () => {
     // 每次重试动态取当前 key（利用 keyManager rotate 后的新 key）
-    const currentApiKey = keyManager?.getCurrentKey?.() || apiKey;
+    const currentApiKey = getRequestApiKey(apiKey, keyManager);
     if (signal?.aborted) throw new Error('用户已取消');
-    const response = await fetch(endpoint, {
+    const response = await corsFetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${currentApiKey}`,
+        ...getAuthorizationHeaders(currentApiKey),
       },
       body: JSON.stringify(requestBody),
       signal,
@@ -904,7 +917,7 @@ export async function submitGridImageRequest(params: {
   if (!imageUrl && taskId) {
     console.log('[GridImageAPI] Got taskId without imageUrl, polling...', taskId);
     const pollUrl = `${rootBase}${imagePaths.poll(taskId)}`;
-    const polledUrl = await pollTaskStatus(taskId, params.keyManager?.getCurrentKey?.() || apiKey, normalizedBase, undefined, pollUrl);
+    const polledUrl = await pollTaskStatus(taskId, getRequestApiKey(apiKey, params.keyManager), normalizedBase, undefined, pollUrl);
     return { imageUrl: polledUrl, taskId };
   }
 
@@ -942,10 +955,10 @@ async function submitViaKlingImages(
   console.log('[ImageGenerator] Kling image →', nativePath, { model });
 
   const data = await retryOperation(async () => {
-    const currentApiKey = keyManager?.getCurrentKey?.() || apiKey;
-    const response = await fetch(`${rootBase}/${nativePath}`, {
+    const currentApiKey = getRequestApiKey(apiKey, keyManager);
+    const response = await corsFetch(`${rootBase}/${nativePath}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${currentApiKey}` },
+      headers: { 'Content-Type': 'application/json', ...getAuthorizationHeaders(currentApiKey) },
       body: JSON.stringify(body),
     });
 
@@ -981,9 +994,9 @@ async function submitViaKlingImages(
 
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(r => setTimeout(r, pollInterval));
-    const currentApiKey = keyManager?.getCurrentKey?.() || apiKey;
-    const pollResp = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${currentApiKey}` },
+    const currentApiKey = getRequestApiKey(apiKey, keyManager);
+    const pollResp = await corsFetch(pollUrl, {
+      headers: { ...getAuthorizationHeaders(currentApiKey) },
     });
     if (!pollResp.ok) continue;
     const pollData = await pollResp.json();
@@ -1037,7 +1050,7 @@ export async function imageUrlToBase64(url: string): Promise<string> {
   
   // Try direct fetch first
   try {
-    const response = await fetch(url, { mode: 'cors' });
+    const response = await corsFetch(url, { mode: 'cors' });
     if (response.ok) {
       const blob = await response.blob();
       return await convertBlobToBase64(blob);

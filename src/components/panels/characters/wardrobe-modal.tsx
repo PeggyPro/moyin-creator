@@ -12,6 +12,7 @@
  *   - Text prompt for fine-grained control
  */
 
+import { getAuthorizationHeaders } from '@/lib/provider-config';
 import { useState, useRef, useCallback, useEffect } from "react";
 import {
   type Character,
@@ -831,7 +832,7 @@ async function pollForVariationImage(
 
       const response = await fetch(url.toString(), {
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          ...getAuthorizationHeaders(apiKey),
           'Cache-Control': 'no-cache',
         },
       });

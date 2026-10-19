@@ -8,7 +8,8 @@ import { UpdateDialog } from "@/components/UpdateDialog";
 import { useThemeStore } from "@/stores/theme-store";
 import { useAPIConfigStore } from "@/stores/api-config-store";
 import { useAppSettingsStore } from "@/stores/app-settings-store";
-import { parseApiKeys } from "@/lib/api-key-manager";
+import { updateProviderKeys } from "@/lib/api-key-manager";
+import { isProviderConfigured, isProviderKeyOptional } from "@/lib/provider-config";
 import { Loader2 } from "lucide-react";
 import { migrateToProjectStorage, recoverFromLegacy } from "@/lib/storage-migration";
 import type { AvailableUpdateInfo } from "@/types/update";
@@ -37,7 +38,7 @@ function App() {
     })();
   }, []);
 
-  // 启动时自动同步所有已配置 API Key 的供应商模型元数据
+  // 启动时自动同步所有已配置供应商的模型元数据
   useEffect(() => {
     if (isMigrating) return;
     let cancelled = false;
@@ -45,11 +46,12 @@ function App() {
     const runStartupSync = async () => {
       const { providers, syncProviderModels } = useAPIConfigStore.getState();
       const configuredProviders = providers
-        .filter((p) => parseApiKeys(p.apiKey).length > 0)
+        .filter(isProviderConfigured)
         .sort((a, b) => Number(b.platform === 'memefast') - Number(a.platform === 'memefast'));
 
       for (const p of configuredProviders) {
         if (cancelled) return;
+        updateProviderKeys(p.id, p.apiKey, undefined, isProviderKeyOptional(p));
         try {
           const result = await syncProviderModels(p.id);
           if (cancelled) return;

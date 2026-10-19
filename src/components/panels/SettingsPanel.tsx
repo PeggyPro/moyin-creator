@@ -23,7 +23,8 @@ import { useCharacterLibraryStore } from "@/stores/character-library-store";
 import { useSceneStore } from "@/stores/scene-store";
 import { useMediaStore } from "@/stores/media-store";
 import { getApiKeyCount, parseApiKeys, maskApiKey } from "@/lib/api-key-manager";
-import { corsFetch } from "@/lib/cors-fetch";
+import { isComfyUIProvider, isProviderConfigured, isProviderKeyOptional } from "@/lib/provider-config";
+import { testProviderConnection } from "@/lib/ai/provider-connection";
 import { AddProviderDialog, EditProviderDialog, FeatureBindingPanel } from "@/components/api-manager";
 import { AddImageHostDialog } from "@/components/image-host-manager/AddImageHostDialog";
 import { EditImageHostDialog } from "@/components/image-host-manager/EditImageHostDialog";
@@ -92,6 +93,10 @@ const PLATFORM_ICONS: Record<string, React.ReactNode> = {
   custom: <Settings className="h-5 w-5" />,
 };
 
+function isLegacyMemefastScriptBinding(binding: string, providerId: string): boolean {
+  return binding === `${providerId}:deepseek-v3` || binding === 'memefast:deepseek-v3';
+}
+
 export function SettingsPanel() {
   const {
     providers,
@@ -156,11 +161,10 @@ export function SettingsPanel() {
   //  2. 旧版本留下无效绑定（模型名错、provider ID 变更等）
   //  3. 用户编辑填 key 后页面刷新
   useEffect(() => {
-    const mf = providers.find(p => p.platform === 'memefast');
-    if (!mf || parseApiKeys(mf.apiKey).length === 0) return;
+    const mf = providers.find(p => p.platform === 'memefast' && isProviderConfigured(p));
+    if (!mf) return;
 
     const pid = mf.id;
-    const models = mf.model || [];
     const defaults: Record<string, string> = {
       script_analysis: `${pid}:deepseek-v3.2`,
       character_generation: `${pid}:gemini-3-pro-image-preview`,
@@ -174,8 +178,11 @@ export function SettingsPanel() {
       if (idx <= 0) return false;
       const ref = b.slice(0, idx);
       const model = b.slice(idx + 1);
-      const p = providers.find(pv => pv.id === ref || pv.platform === ref);
-      if (!p || parseApiKeys(p.apiKey).length === 0) return false;
+      if (!model) return false;
+      const platformMatches = providers.filter(pv => pv.platform === ref);
+      const p = providers.find(pv => pv.id === ref)
+        || (platformMatches.length === 1 ? platformMatches[0] : undefined);
+      if (!p || !isProviderConfigured(p)) return false;
       // 模型列表为空时（尚未同步）暂时信任绑定
       if (p.model.length === 0) return true;
       return p.model.includes(model);
@@ -185,13 +192,9 @@ export function SettingsPanel() {
     for (const [feature, binding] of Object.entries(defaults)) {
       const cur = getFeatureBindings(feature as AIFeature);
 
-      // 自愈：deepseek-v3 → deepseek-v3.2（在校验之前先迁移）
-      if (feature === 'script_analysis' && cur && cur.some(b => b.endsWith(':deepseek-v3'))) {
-        const migrated = cur.map(b => {
-          if (!b.endsWith(':deepseek-v3')) return b;
-          const i = b.indexOf(':');
-          return i > 0 ? `${b.slice(0, i)}:deepseek-v3.2` : binding;
-        });
+      // 自愈仅处理当前 MemeFast 的旧默认绑定，保留其他供应商的同名模型。
+      if (feature === 'script_analysis' && cur.some(b => isLegacyMemefastScriptBinding(b, pid))) {
+        const migrated = cur.map(b => isLegacyMemefastScriptBinding(b, pid) ? `${pid}:deepseek-v3.2` : b);
         setFeatureBindings(feature as AIFeature, [...new Set(migrated)]);
         changed = true;
         continue;
@@ -276,11 +279,11 @@ export function SettingsPanel() {
     }
   };
 
-  // Test connection - directly call external APIs
   const testConnection = async (provider: IProvider) => {
-    const keys = parseApiKeys(provider.apiKey);
-    if (keys.length === 0) {
-      toast.error("请先配置 API Key");
+    if (!isProviderConfigured(provider)) {
+      toast.error(!isProviderKeyOptional(provider) && getApiKeyCount(provider.apiKey) === 0
+        ? "请先配置 API Key"
+        : "请先配置有效的 HTTP(S) Base URL");
       return;
     }
 
@@ -288,70 +291,15 @@ export function SettingsPanel() {
     setTestResults((prev) => ({ ...prev, [provider.id]: null }));
 
     try {
-      let response: Response;
-      const apiKey = keys[0]; // Use first key for test
-      const normalizedBaseUrl = provider.baseUrl?.replace(/\/+$/, "");
-      const buildEndpoint = (root: string, path: string) => {
-        const normalized = root.replace(/\/+$/, "");
-        return /\/v\d+$/.test(normalized) ? `${normalized}/${path}` : `${normalized}/v1/${path}`;
-      };
-
-      if (provider.platform === "runninghub") {
-        if (!normalizedBaseUrl) {
-          toast.error("请先配置 Base URL");
-          setTestingProvider(null);
-          return;
-        }
-        response = await corsFetch(`${normalizedBaseUrl}/query`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            taskId: "test-connection-check",
-          }),
-        });
-        
-        // For RunningHub, 400/404 means auth is OK (task doesn't exist)
-        if (response.status === 400 || response.status === 404) {
-          setTestResults((prev) => ({ ...prev, [provider.id]: true }));
-          toast.success("连接测试成功");
-          setTestingProvider(null);
-          return;
-        }
-      } else if (normalizedBaseUrl && provider.model?.length) {
-        const endpoint = buildEndpoint(normalizedBaseUrl, "chat/completions");
-        const model = provider.model[0];
-        response = await corsFetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            messages: [{ role: "user", content: "Hi" }],
-            max_tokens: 5,
-          }),
-        });
+      const result = await testProviderConnection(provider);
+      setTestResults((prev) => ({ ...prev, [provider.id]: result.success }));
+      if (result.success) {
+        toast.success(result.message);
       } else {
-        // For providers without chat endpoint info, just mark as configured
-        setTestResults((prev) => ({ ...prev, [provider.id]: true }));
-        toast.success(`${provider.name} 已配置`);
-        setTestingProvider(null);
-        return;
+        toast.error(result.message);
       }
-
-      const success = response.ok;
-      setTestResults((prev) => ({ ...prev, [provider.id]: success }));
-
-      if (success) {
-        toast.success("连接测试成功");
-      } else {
-        const errorData = await response.text();
-        console.error("API test error:", response.status, errorData);
-        toast.error(`连接测试失败 (${response.status})`);
+      if (result.warning) {
+        toast.warning(result.warning);
       }
     } catch (error) {
       console.error("Connection test error:", error);
@@ -362,15 +310,32 @@ export function SettingsPanel() {
     }
   };
 
+  const syncModels = async (provider: IProvider, automatic = false) => {
+    setSyncingProvider(provider.id);
+    try {
+      const result = await syncProviderModels(provider.id);
+      if (result.success) {
+        toast.success(`已${automatic ? "自动" : ""}同步 ${result.count} 个模型`);
+      } else if (isComfyUIProvider(provider)) {
+        toast.info(result.error || "ComfyUI 请手工配置工作流列表，现有列表已保留");
+      } else {
+        toast.error(`模型同步失败: ${result.error || "未知错误"}`);
+      }
+    } catch (error) {
+      console.error("Model sync error:", error);
+      toast.error("模型同步失败，请检查网络");
+    } finally {
+      setSyncingProvider((current) => current === provider.id ? null : current);
+    }
+  };
+
   // Get existing platforms
   const existingPlatforms = useMemo(
     () => providers.map((p) => p.platform),
     [providers]
   );
 
-  const configuredCount = providers.filter(
-    (p) => parseApiKeys(p.apiKey).length > 0
-  ).length;
+  const configuredCount = providers.filter(isProviderConfigured).length;
 
   const [activeTab, setActiveTab] = useState<string>("api");
   const hasStorageManager = typeof window !== "undefined" && !!window.storageManager;
@@ -773,7 +738,7 @@ export function SettingsPanel() {
                 {providers.map((provider) => {
                   const isExpanded = expandedProviders[provider.id] ?? false;
                   const keyCount = getApiKeyCount(provider.apiKey);
-                  const configured = keyCount > 0;
+                  const configured = isProviderConfigured(provider);
                   const testResult = testResults[provider.id];
                   const isTesting = testingProvider === provider.id;
 
@@ -859,16 +824,7 @@ export function SettingsPanel() {
                                   size="icon"
                                   className="h-8 w-8"
                                   title="同步模型列表"
-                                  onClick={async () => {
-                                    setSyncingProvider(provider.id);
-                                    const result = await syncProviderModels(provider.id);
-                                    setSyncingProvider(null);
-                                    if (result.success) {
-                                      toast.success(`已同步 ${result.count} 个模型`);
-                                    } else {
-                                      toast.error(result.error || '同步失败');
-                                    }
-                                  }}
+                                  onClick={() => void syncModels(provider)}
                                   disabled={!configured || syncingProvider === provider.id}
                                 >
                                   {syncingProvider === provider.id ? (
@@ -993,7 +949,10 @@ export function SettingsPanel() {
                             )}
 
                             {/* API Key Preview */}
-                            {configured && (
+                            {configured && keyCount === 0 && (
+                              <p className="text-xs text-muted-foreground">API Key: 无鉴权（可留空）</p>
+                            )}
+                            {keyCount > 0 && (
                               <div className="text-xs">
                                 <span className="text-muted-foreground">
                                   API Key:{" "}
@@ -1606,13 +1565,13 @@ export function SettingsPanel() {
             const oldKeys = parseApiKeys(existingMemefast.apiKey);
             const newKeys = parseApiKeys(providerData.apiKey);
             const merged = Array.from(new Set([...oldKeys, ...newKeys]));
-            updateProvider({ ...existingMemefast, apiKey: merged.join(',') });
-            provider = existingMemefast;
+            provider = { ...existingMemefast, apiKey: merged.join(',') };
+            updateProvider(provider);
           } else {
             provider = addProvider(providerData);
           }
           // 如果添加的是 memefast 供应商，自动设置默认服务映射（仅在对应服务尚未配置时）
-          if (providerData.platform === 'memefast') {
+          if (provider.platform === 'memefast' && isProviderConfigured(provider)) {
             // 使用 provider.id（而非 platform 字符串）避免多供应商时的歧义解析
             const pid = provider.id;
             const MEMEFAST_DEFAULT_BINDINGS: Record<string, string> = {
@@ -1631,14 +1590,11 @@ export function SettingsPanel() {
               }
               // 自愈：旧默认 deepseek-v3 -> deepseek-v3.2（尽量不破坏多选配置）
               if (feature === 'script_analysis') {
-                const hasOld = current.some((b) => b.endsWith(':deepseek-v3'));
+                const hasOld = current.some((b) => isLegacyMemefastScriptBinding(b, pid));
                 if (hasOld) {
                   const migrated = current.map((b) => {
-                    if (!b.endsWith(':deepseek-v3')) return b;
-                    const idx = b.indexOf(':');
-                    if (idx <= 0) return binding;
-                    const prefix = b.slice(0, idx);
-                    return `${prefix}:deepseek-v3.2`;
+                    if (!isLegacyMemefastScriptBinding(b, pid)) return b;
+                    return `${pid}:deepseek-v3.2`;
                   });
                   const deduped = Array.from(new Set(migrated));
                   setFeatureBindings(feature as AIFeature, deduped);
@@ -1646,18 +1602,9 @@ export function SettingsPanel() {
               }
             }
           }
-          // 添加后自动同步模型列表和端点元数据
-          const finalProviderId = existingMemefast ? existingMemefast.id : provider.id;
-          if (parseApiKeys(providerData.apiKey).length > 0) {
-            setSyncingProvider(finalProviderId);
-            syncProviderModels(finalProviderId).then(result => {
-              setSyncingProvider(null);
-              if (result.success) {
-                toast.success(`已自动同步 ${result.count} 个模型`);
-              } else if (result.error) {
-                toast.error(`模型同步失败: ${result.error}`);
-              }
-            });
+          // 添加后自动同步；无鉴权 custom 同样请求模型列表，ComfyUI 提示保留手工工作流。
+          if (isProviderConfigured(provider)) {
+            void syncModels(provider, true);
           }
         }}
         existingPlatforms={existingPlatforms}
@@ -1672,7 +1619,7 @@ export function SettingsPanel() {
 
           // 编辑 memefast 时也自动设置默认服务映射：初始状态会预置一个空 key 的 memefast，
           // 用户通常是“编辑填 key”，如果不在这里补默认映射，会导致服务映射一直是 0/6。
-          if (provider.platform === 'memefast' && parseApiKeys(provider.apiKey).length > 0) {
+          if (provider.platform === 'memefast' && isProviderConfigured(provider)) {
             const pid = provider.id;
             const MEMEFAST_DEFAULT_BINDINGS: Record<string, string> = {
               // NOTE: MemeFast 端点已升级，旧的 deepseek-v3 已不在列表中，改用 deepseek-v3.2
@@ -1689,14 +1636,11 @@ export function SettingsPanel() {
               }
               // 自愈：旧默认 deepseek-v3 -> deepseek-v3.2
               if (feature === 'script_analysis') {
-                const hasOld = current.some((b) => b.endsWith(':deepseek-v3'));
+                const hasOld = current.some((b) => isLegacyMemefastScriptBinding(b, pid));
                 if (hasOld) {
                   const migrated = current.map((b) => {
-                    if (!b.endsWith(':deepseek-v3')) return b;
-                    const idx = b.indexOf(':');
-                    if (idx <= 0) return binding;
-                    const prefix = b.slice(0, idx);
-                    return `${prefix}:deepseek-v3.2`;
+                    if (!isLegacyMemefastScriptBinding(b, pid)) return b;
+                    return `${pid}:deepseek-v3.2`;
                   });
                   const deduped = Array.from(new Set(migrated));
                   setFeatureBindings(feature as AIFeature, deduped);
@@ -1704,17 +1648,9 @@ export function SettingsPanel() {
               }
             }
           }
-          // 编辑保存后自动同步模型列表和端点元数据
-          if (parseApiKeys(provider.apiKey).length > 0) {
-            setSyncingProvider(provider.id);
-            syncProviderModels(provider.id).then(result => {
-              setSyncingProvider(null);
-              if (result.success) {
-                toast.success(`已自动同步 ${result.count} 个模型`);
-              } else if (result.error) {
-                toast.error(`模型同步失败: ${result.error}`);
-              }
-            });
+          // 编辑保存后使用统一配置状态，允许空 Key 的本地供应商自动同步。
+          if (isProviderConfigured(provider)) {
+            void syncModels(provider, true);
           }
         }}
       />

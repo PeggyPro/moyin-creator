@@ -455,22 +455,23 @@ export async function generateEpisodeShots(
     
     console.log('\n============================================');
     console.log('[generateEpisodeShots] === 开始 AI 视角分析 ===');
-    console.log('[generateEpisodeShots] apiKey:', options.apiKey ? `已配置(长度${options.apiKey.length})` : '未配置');
+    const hasViewpointConfig = useAPIConfigStore.getState().isFeatureConfigured('script_analysis');
+    console.log('[generateEpisodeShots] AI 服务已配置:', hasViewpointConfig);
     console.log('[generateEpisodeShots] provider:', options.provider);
     console.log('[generateEpisodeShots] baseUrl:', options.baseUrl || '默认');
     console.log('[generateEpisodeShots] episodeScenes.length:', episodeScenes.length);
     console.log('[generateEpisodeShots] newShots.length:', newShots.length);
     console.log('============================================\n');
     
-    if (!options.apiKey) {
-      viewpointSkippedReason = 'apiKey 未配置';
-      console.error('[generateEpisodeShots] ❌ 跳过 AI 视角分析: apiKey 未配置');
+    if (!hasViewpointConfig) {
+      viewpointSkippedReason = 'AI 服务或模型未配置';
+      console.error('[generateEpisodeShots] ❌ 跳过 AI 视角分析: AI 服务或模型未配置');
     } else if (episodeScenes.length === 0) {
       viewpointSkippedReason = '无场景';
       console.warn('[generateEpisodeShots] ⚠️ 跳过 AI 视角分析: 无场景');
     }
     
-    if (options.apiKey && episodeScenes.length > 0) {
+    if (hasViewpointConfig && episodeScenes.length > 0) {
       onProgress?.(`正在 AI 分析场景视角（共 ${episodeScenes.length} 个场景）...`);
       
       try {
