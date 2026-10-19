@@ -73,7 +73,7 @@ export const DEFAULT_PROVIDERS: Omit<IProvider, 'id' | 'apiKey'>[] = [
  * 用于动态同步的 552+ 模型自动分类
  */
 export function classifyModelByName(modelName: string): ModelCapability[] {
-  const name = modelName.toLowerCase();
+  const name = modelName.trim().toLowerCase();
 
   // ---- 视频生成模型 ----
   const videoPatterns = [
@@ -92,20 +92,39 @@ export function classifyModelByName(modelName: string): ModelCapability[] {
     'playground', 'recraft', 'kolors', 'seedream',
   ];
   if (imageGenPatterns.some(p => name.includes(p))) return ['image_generation'];
+  // GPT-4o 图片生成别名不能作为视觉对话模型。
+  if (/(?:^|[/:])gpt-?4o-(?:image|text-to-image)(?:-|$)/.test(name)) return ['image_generation'];
   // "xxx-image-preview" 类（如 gemini-3-pro-image-preview）
   if (/image[- ]?preview/.test(name)) return ['image_generation'];
 
-  // ---- 视觉/识图模型 ----
-  if (/vision/.test(name)) return ['text', 'vision'];
-
-  // ---- TTS / Audio 模型（不归入任何主分类）----
-  if (/tts|whisper|audio/.test(name)) return ['text'];
+  // ---- TTS / Audio / Realtime 模型（先排除，再判断视觉能力）----
+  if (/tts|whisper|audio|realtime/.test(name)) return ['text'];
 
   // ---- Embedding 模型 ----
   if (/embed/.test(name)) return ['embedding'];
 
+  // ---- 视觉/识图模型 ----
+  if (/vision/.test(name)) return ['text', 'vision'];
+
+  // GPT 视觉系列按版本识别，兼容日期后缀和中转别名（如 gpt-6.1-sol）。
+  // 仅用于缺少平台能力元数据时的推断；旧版 GPT-3.5 / GPT-4 仍按文本处理。
+  const gptName = name.split(/[/:]/).pop() || name;
+  const gptVersion = /^gpt-(\d+)(?:[.-]|$)/.exec(gptName);
+  // 文本专用变体不继承所属 GPT 系列的视觉能力。
+  const isTextOnlyGpt = /^gpt-4-turbo-preview(?:[.-]|$)/.test(gptName)
+    || /(?:^|[-_])codex[-_]spark(?:$|[-_])/.test(gptName);
+  const isReasoning = /[- ](r1|thinking|reasoner|reason)/.test(name) || /^o[1-9]/.test(name);
+  if (
+    !isTextOnlyGpt && (
+      /^gpt-4(?:o|\.1|\.5|-turbo)(?:[.-]|$)/.test(gptName)
+      || (gptVersion !== null && Number(gptVersion[1]) >= 5)
+    )
+  ) {
+    return isReasoning ? ['text', 'vision', 'reasoning'] : ['text', 'vision'];
+  }
+
   // ---- 推理/思考模型（仍归入 text）----
-  if (/[- ](r1|thinking|reasoner|reason)/.test(name) || /^o[1-9]/.test(name)) return ['text', 'reasoning'];
+  if (isReasoning) return ['text', 'reasoning'];
 
   // ---- 默认：对话模型 ----
   return ['text'];

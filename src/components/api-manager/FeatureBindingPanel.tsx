@@ -208,8 +208,8 @@ function modelSupportsCapability(
     return modelCaps.includes(required);
   }
 
-  // 2. 平台元数据（来自 /api/pricing_new 的 model_type + tags）
-  if (modelType) {
+  // 2. 平台元数据（来自 MemeFast /api/pricing_new，不适用于其他供应商的同名模型）
+  if (provider.platform === 'memefast' && modelType) {
     switch (required) {
       case 'text':
         return modelType === '文本';
