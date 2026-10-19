@@ -147,10 +147,22 @@ git clone https://github.com/MemeCalculate/moyin-creator.git
 cd moyin-creator
 
 # 安装依赖
-npm install
+pnpm install
+
+``
+pnpm-workspace.yaml # 内容改为
+
+allowBuilds:
+  electron: true
+  esbuild: false
+  sharp: false
+  
+``
+# 重新构建electron
+pnpm rebuild electron
 
 # 启动开发模式
-npm run dev
+pnpm run dev
 ```
 
 ### 配置 API Key

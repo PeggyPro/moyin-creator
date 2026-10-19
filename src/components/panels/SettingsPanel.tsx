@@ -23,6 +23,7 @@ import { useCharacterLibraryStore } from "@/stores/character-library-store";
 import { useSceneStore } from "@/stores/scene-store";
 import { useMediaStore } from "@/stores/media-store";
 import { getApiKeyCount, parseApiKeys, maskApiKey } from "@/lib/api-key-manager";
+import { corsFetch } from "@/lib/cors-fetch";
 import { AddProviderDialog, EditProviderDialog, FeatureBindingPanel } from "@/components/api-manager";
 import { AddImageHostDialog } from "@/components/image-host-manager/AddImageHostDialog";
 import { EditImageHostDialog } from "@/components/image-host-manager/EditImageHostDialog";
@@ -301,7 +302,7 @@ export function SettingsPanel() {
           setTestingProvider(null);
           return;
         }
-        response = await fetch(`${normalizedBaseUrl}/query`, {
+        response = await corsFetch(`${normalizedBaseUrl}/query`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -322,7 +323,7 @@ export function SettingsPanel() {
       } else if (normalizedBaseUrl && provider.model?.length) {
         const endpoint = buildEndpoint(normalizedBaseUrl, "chat/completions");
         const model = provider.model[0];
-        response = await fetch(endpoint, {
+        response = await corsFetch(endpoint, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

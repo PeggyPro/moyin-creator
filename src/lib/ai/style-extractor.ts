@@ -5,6 +5,7 @@
 import { getFeatureConfig } from '@/lib/ai/feature-router';
 import { readImageAsBase64 } from '@/lib/image-storage';
 import { retryOperation } from '@/lib/utils/retry';
+import { corsFetch } from '@/lib/cors-fetch';
 
 export interface StyleExtractionResult {
   styleTokens: string;
@@ -163,7 +164,7 @@ export async function extractStyleTokens(
 
   const response = await retryOperation(async () => {
     const currentApiKey = config.keyManager.getCurrentKey() || config.apiKey;
-    const resp = await fetch(endpoint, {
+    const resp = await corsFetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

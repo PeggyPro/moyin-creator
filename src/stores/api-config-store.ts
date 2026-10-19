@@ -20,6 +20,7 @@ import {
   classifyModelByName,
 } from '@/lib/api-key-manager';
 import { injectDiscoveryCache, type DiscoveredModelLimits } from '@/lib/ai/model-registry';
+import { corsFetch } from '@/lib/cors-fetch';
 
 // Re-export IProvider for convenience
 export type { IProvider } from '@/lib/api-key-manager';
@@ -609,7 +610,7 @@ export const useAPIConfigStore = create<APIConfigStore>()(
             const domain = baseUrl.replace(/\/v\d+$/, '');
             const pricingUrl = `${domain}/api/pricing_new`;
 
-            const response = await fetch(pricingUrl);
+            const response = await corsFetch(pricingUrl);
             if (!response.ok) {
               return { success: false, count: 0, error: `pricing_new API 返回 ${response.status}` };
             }
@@ -656,7 +657,7 @@ export const useAPIConfigStore = create<APIConfigStore>()(
 
             for (let ki = 0; ki < keys.length; ki++) {
               try {
-                const resp = await fetch(modelsUrl, {
+                const resp = await corsFetch(modelsUrl, {
                   headers: { 'Authorization': `Bearer ${keys[ki]}` },
                 });
                 if (!resp.ok) {
@@ -691,7 +692,7 @@ export const useAPIConfigStore = create<APIConfigStore>()(
 
             for (let ki = 0; ki < keys.length; ki++) {
               try {
-                const response = await fetch(modelsUrl, {
+                const response = await corsFetch(modelsUrl, {
                   headers: { 'Authorization': `Bearer ${keys[ki]}` },
                 });
 

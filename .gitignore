@@ -27,6 +27,9 @@ release/
 .tmp-*
 .backup-assets-panel/
 backups/
+pyproject.toml
+pnpm-lock.yaml
+pnpm-workspace.yaml
 
 # Environment & secrets
 *.env
