@@ -1622,9 +1622,9 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       });
       
       // 使用用户设置的时长，默认 5 秒
-      // Seedance 1.5 Pro 要求 4-12 秒，强制限制范围
+      // 原生 ComfyUI 保留用户时长，由工作流按模型帧数要求对齐
       const rawDuration = scene.duration || 5;
-      const videoDuration = Math.max(4, Math.min(12, rawDuration));
+      const videoDuration = isNativeComfyUI ? rawDuration : Math.max(4, Math.min(12, rawDuration));
 
       console.log('[SplitScenes] Video generation params:', {
         sceneId,
@@ -3853,6 +3853,12 @@ export function SplitScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
           {storyboardConfig.styleTokens?.slice(0, 2).join(', ')}...
         </div>
       </div>
+
+      <p className="text-xs leading-5 text-muted-foreground" data-testid="director-mode-guide">
+        {imageGenMode === 'merged'
+          ? '合并生成会批量出网格图片并切回各镜首帧/尾帧，不会拼成视频。下一步：检查切割后的首帧，再逐镜生成视频。'
+          : '单图生成便于逐镜检查画面。下一步：先为一个分镜生成首帧，确认人物与场景后，再生成该镜视频。'}
+      </p>
 
       {/* Row 2: 合并生成选项（仅在合并模式下显示） */}
       {imageGenMode === 'merged' && (

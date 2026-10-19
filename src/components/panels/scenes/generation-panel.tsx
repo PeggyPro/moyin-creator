@@ -2468,6 +2468,7 @@ ${anchor} 的背面直视镜头。展示后部结构。背景是物体面向的�
         
         <ScrollArea className="flex-1 p-3">
           <div className="space-y-4">
+            <p className="rounded-md bg-primary/5 p-2 text-xs leading-5 text-muted-foreground">这是可选的场景机位参考。下一步：生成或上传四视图 → 切割 → 保存视角图片到场景；已有合适参考图时可以取消并回导演。</p>
             {/* 视觉风格 + 宽高比 */}
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-2">
@@ -2779,6 +2780,7 @@ ${anchor} 的背面直视镜头。展示后部结构。背景是物体面向的�
         
         <ScrollArea className="flex-1 p-3">
           <div className="space-y-4">
+            <p className="rounded-md bg-primary/5 p-2 text-xs leading-5 text-muted-foreground">下一步：生成联合图，系统将自动切割并保存为视角子场景。四视图是后续可选项；保存完成后可直接到导演选择参考。</p>
             {/* 分页控制 */}
             {hasMultiplePages && (
               <div className="flex items-center justify-between p-2 rounded bg-muted/50">
@@ -3138,6 +3140,11 @@ ${anchor} 的背面直视镜头。展示后部结构。背景是物体面向的�
             四视图
           </ToggleGroupItem>
         </ToggleGroup>
+        <p className="text-xs leading-5 text-muted-foreground" data-testid="scene-mode-guide">
+          {generationMode === 'single' ? '先生成并保存一张地点概念图，就能回导演使用。'
+            : generationMode === 'contact-sheet' ? '联合图用于多个剧情区域；下一步生成联合图，系统会切割并保存视角子场景。'
+              : '四视图用于同一空间前后左右的机位，按需补充；生成或上传后切割，再保存视角图片。'}
+        </p>
       </div>
 
       <ScrollArea className="flex-1 p-3">

@@ -10,6 +10,8 @@
 
 import { getAuthorizationHeaders, isComfyUIProvider, getComfyUIVideoUnsupportedReason } from '@/lib/provider-config';
 import { generateComfyUIVideo } from '@/lib/ai/comfyui-video';
+import { corsFetch } from '@/lib/cors-fetch';
+import { buildGptImageRequest, extractImageResult, isStandardGptImageModel } from '@/lib/ai/openai-image-protocol';
 import {
   getAllFeatureConfigs,
   getFeatureConfig,
@@ -34,6 +36,7 @@ export interface FreedomImageParams {
   width?: number;
   height?: number;
   negativePrompt?: string;
+  referenceImages?: string[];
   extraParams?: Record<string, any>;
 }
 
@@ -498,14 +501,30 @@ async function generateViaImagesEndpoint(
 
   const imagePaths = getImageEndpointPaths(endpointTypes || []);
   const rootBase = getRootBaseUrl(baseUrl);
-  const submitUrl = `${rootBase}${imagePaths.submit}`;
-  const response = await fetch(submitUrl, {
+  const referenceImages = params.referenceImages || (Array.isArray(params.extraParams?.image_urls)
+    ? params.extraParams.image_urls.filter((value: unknown): value is string => typeof value === 'string')
+    : undefined);
+  const gptRequest = isStandardGptImageModel(model)
+    ? await buildGptImageRequest({
+      model,
+      prompt: params.prompt,
+      aspectRatio: params.aspectRatio || '1:1',
+      resolution: params.resolution,
+      width: params.width,
+      height: params.height,
+      referenceImages,
+    })
+    : undefined;
+  const submitUrl = gptRequest
+    ? buildEndpoint(baseUrl, gptRequest.path)
+    : `${rootBase}${imagePaths.submit}`;
+  const response = await corsFetch(submitUrl, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
+      ...(gptRequest?.headers || { 'Content-Type': 'application/json' }),
       ...getAuthorizationHeaders(apiKey),
     },
-    body: JSON.stringify(body),
+    body: gptRequest?.body || JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -1614,10 +1633,9 @@ async function generateVideoViaReplicate(
 // ==================== Helpers ====================
 
 function extractImageUrl(data: any): string | null {
-  // Handle multiple response formats
-  if (data.data?.[0]?.url) return data.data[0].url;
-  if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
-  if (data.url) return data.url;
+  // Standard Images API and the existing gateway URL/chat envelopes.
+  const image = extractImageResult(data);
+  if (image) return image;
   if (data.output?.url) return data.output.url;
   // Replicate: output as direct string URL or array of URLs
   if (typeof data.output === 'string' && data.output.startsWith('http')) return data.output;
@@ -1656,7 +1674,7 @@ async function pollForResult(
     await new Promise(resolve => setTimeout(resolve, interval));
 
     try {
-      const response = await fetch(pollUrl, {
+      const response = await corsFetch(pollUrl, {
         headers: { ...getAuthorizationHeaders(apiKey) },
       });
 

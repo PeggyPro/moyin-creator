@@ -745,7 +745,7 @@ export function DirectorContextPanel() {
           </span>
         </div>
         <p className="text-xs text-muted-foreground mt-2">
-          点击场景/分镜可发送到AI导演输入
+          点击场景或分镜旁的 + 加入编辑；纸飞机按钮发送到 AI 导演输入。添加分镜不会自动生图，请避免重复添加同一批。
         </p>
         {/* 分镜编辑计数 */}
         {splitScenes.length > 0 && (

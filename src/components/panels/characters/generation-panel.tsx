@@ -502,6 +502,7 @@ export function GenerationPanel({ selectedCharacter, onCharacterCreated }: Gener
           </div>
         </ScrollArea>
         <div className="p-3 border-t space-y-2 shrink-0">
+          <p className="text-xs leading-5 text-muted-foreground">下一步：确认画面后点击“保存设定图”，再回导演关联这个角色。当前预览尚未保存。</p>
           <Button onClick={handleSavePreview} className="w-full">
             保存设定图
           </Button>

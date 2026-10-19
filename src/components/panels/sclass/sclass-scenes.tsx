@@ -8,7 +8,7 @@
  * 显示分镜切割结果，支持编辑提示词、上传尾帧、选择角色库、添加情绪标签
  */
 
-import { getAuthorizationHeaders, isComfyUIProvider, getComfyUIVideoUnsupportedReason } from '@/lib/provider-config';
+import { getAuthorizationHeaders, isComfyUIProvider, getComfyUIVideoUnsupportedReason, getComfyUIVideoModelKind } from '@/lib/provider-config';
 import React, { useState, useCallback, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -1466,6 +1466,7 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
     console.log(`[SplitScenes] Using API key ${keyManager.getTotalKeyCount()} keys, current index available: ${keyManager.getAvailableKeyCount()}`);
 
     const isNativeComfyUI = isComfyUIProvider(featureConfig.provider);
+    const isNativeWan = isNativeComfyUI && getComfyUIVideoModelKind(model) === 'wan';
 
     setIsGenerating(true);
     setCurrentGeneratingId(sceneId);
@@ -1518,7 +1519,10 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
       // 仅当 needsEndFrame 为 true 时才使用尾帧
       // 如果用户已删除尾帧或关闭了尾帧开关，则不使用尾帧作为视频生成的参考
       let lastFrameUrl: string | null | undefined = null;
-      if (scene.needsEndFrame && (scene.endFrameImageUrl || (isNativeComfyUI && scene.endFrameHttpUrl))) {
+      if (isNativeWan && scene.needsEndFrame) {
+        toast.info('ComfyUI Wan 工作流仅支持首帧，本次按首帧生成，不使用尾帧参考');
+      }
+      if (!isNativeWan && scene.needsEndFrame && (scene.endFrameImageUrl || (isNativeComfyUI && scene.endFrameHttpUrl))) {
         // Native uploads the current local frame directly.
         lastFrameUrl = isNativeComfyUI
           ? scene.endFrameImageUrl || scene.endFrameHttpUrl
@@ -1549,10 +1553,10 @@ export function SClassScenes({ onBack, onGenerateVideos }: SplitScenesProps) {
         mediaType: getMediaType(currentStyleId),
       });
       
-      // 使用用户设置的时长，默认 5 秒
-      // Seedance 1.5 Pro 要求 4-12 秒，强制限制范围
+      // 使用用户设置的时长，默认 5 秒；原生 ComfyUI 由工作流校验范围
+      // 其他供应商保留 Seedance 1.5 Pro 的 4-12 秒限制
       const rawDuration = scene.duration || 5;
-      const videoDuration = Math.max(4, Math.min(12, rawDuration));
+      const videoDuration = isNativeComfyUI ? rawDuration : Math.max(4, Math.min(12, rawDuration));
 
       console.log('[SplitScenes] Video generation params:', {
         sceneId,

@@ -227,6 +227,8 @@ export function CharacterGenerator({ character }: CharacterGeneratorProps) {
           </div>
         </div>
 
+        <p className="text-xs leading-5 text-muted-foreground">下一步：点击“保存设定图”确认新画面，然后到导演核对角色关联。当前预览尚未保存。</p>
+
         {/* Action buttons */}
         <div className="flex gap-2">
           <Button 

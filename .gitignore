@@ -30,6 +30,7 @@ backups/
 pyproject.toml
 pnpm-lock.yaml
 pnpm-workspace.yaml
+artifacts
 
 # Environment & secrets
 *.env

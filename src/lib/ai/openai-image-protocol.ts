@@ -133,7 +133,14 @@ export async function buildGptImageRequest(params: {
   return { path: 'images/edits', headers: {}, body: form };
 }
 
-type ImagePayload = Record<string, any>;
+type ImagePayload = Record<string, unknown>;
+type ChatImagePart = {
+  type?: unknown;
+  image_url?: { url?: unknown };
+  image?: { url?: unknown };
+  data?: unknown;
+};
+type ChatImageChoice = { message?: { content?: unknown } };
 
 function firstString(value: unknown): string | undefined {
   if (Array.isArray(value)) return firstString(value[0]);
@@ -160,11 +167,14 @@ export function extractImageResult(payload: unknown): string | undefined {
     const image = extractImageResult(first);
     if (image) return image;
   }
-  const content = data.choices?.[0]?.message?.content;
+  const choices = Array.isArray(data.choices) ? data.choices as ChatImageChoice[] : undefined;
+  const content = choices?.[0]?.message?.content;
   if (Array.isArray(content)) {
-    for (const part of content) {
+    for (const value of content) {
+      if (!value || typeof value !== 'object') continue;
+      const part = value as ChatImagePart;
       const image = firstString(part.image_url?.url) || firstString(part.image?.url)
-        || (part.type === 'image' && part.data ? `data:image/png;base64,${part.data}` : undefined);
+        || (part.type === 'image' && typeof part.data === 'string' && part.data ? `data:image/png;base64,${part.data}` : undefined);
       if (image) return image;
     }
   }

@@ -1,7 +1,7 @@
 // Copyright (c) 2025 hotflow2024
 // Licensed under AGPL-3.0-or-later. See LICENSE for details.
 // Commercial licensing available. See COMMERCIAL_LICENSE.md.
-import { mainNavItems, bottomNavItems, Tab, useMediaPanelStore } from "@/stores/media-panel-store";
+import { mainNavItems, bottomNavItems, useMediaPanelStore } from "@/stores/media-panel-store";
 import { useThemeStore } from "@/stores/theme-store";
 import { cn } from "@/lib/utils";
 import {
@@ -164,17 +164,16 @@ export function TabBar() {
         <TooltipProvider delayDuration={300}>
           <Tooltip>
             <TooltipTrigger asChild>
-              <a
-                href="https://github.com/MemeCalculate/moyin-creator/blob/main/docs/WORKFLOW_GUIDE.md"
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                type="button"
+                onClick={() => window.dispatchEvent(new Event('moyin:workflow-help'))}
                 className="w-full flex flex-col items-center py-2 text-muted-foreground hover:text-foreground transition-colors"
               >
                 <HelpCircle className="h-4 w-4" />
                 <span className="text-[8px]">帮助</span>
-              </a>
+              </button>
             </TooltipTrigger>
-            <TooltipContent side="right">使用帮助</TooltipContent>
+            <TooltipContent side="right">本页步骤与当前服务</TooltipContent>
           </Tooltip>
         </TooltipProvider>
         {bottomNavItems.map((item) => {

@@ -8,6 +8,8 @@
 
 import { getAuthorizationHeaders, isComfyUIProvider, getComfyUIVideoUnsupportedReason } from '@/lib/provider-config';
 import { generateComfyUIVideo } from '@/lib/ai/comfyui-video';
+import { corsFetch } from '@/lib/cors-fetch';
+import { buildGptImageRequest, extractImageResult, isStandardGptImageModel } from '@/lib/ai/openai-image-protocol';
 import type { Shot } from "@/types/script";
 import { retryOperation } from "@/lib/utils/retry";
 import { delay, RATE_LIMITS } from "@/lib/utils/rate-limiter";
@@ -55,7 +57,8 @@ async function pollTaskStatus(
       const url = new URL(buildEndpoint(baseUrl, `tasks/${taskId}`));
       url.searchParams.set('_ts', Date.now().toString());
 
-      const response = await fetch(url.toString(), {
+      const fetchStatus = type === 'image' ? corsFetch : fetch;
+      const response = await fetchStatus(url.toString(), {
         method: 'GET',
         headers: {
           ...getAuthorizationHeaders(apiKey),
@@ -160,6 +163,16 @@ export async function generateShotImage(
 
   console.log('[ShotGenerator] Generating image for shot:', shot.id, prompt.substring(0, 100));
 
+  const gptRequest = isStandardGptImageModel(model)
+    ? await buildGptImageRequest({
+      model,
+      prompt,
+      aspectRatio,
+      resolution: config.imageResolution || '2K',
+      referenceImages,
+    })
+    : undefined;
+
   const requestData: Record<string, unknown> = {
     model,
     prompt,
@@ -177,13 +190,13 @@ export async function generateShotImage(
 
   // Use retry wrapper for 429 rate limit handling
   const data = await retryOperation(async () => {
-    const response = await fetch(buildEndpoint(baseUrl, 'images/generations'), {
+    const response = await corsFetch(buildEndpoint(baseUrl, gptRequest?.path || 'images/generations'), {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        ...(gptRequest?.headers || { 'Content-Type': 'application/json' }),
         ...getAuthorizationHeaders(apiKey),
       },
-      body: JSON.stringify(requestData),
+      body: gptRequest?.body || JSON.stringify(requestData),
     });
 
     if (!response.ok) {
@@ -208,8 +221,8 @@ export async function generateShotImage(
 
   onProgress?.(30);
 
-  // Check for direct URL
-  const directUrl = data.data?.[0]?.url || data.url;
+  // Standard GPT Images return b64_json; existing gateways may return a URL.
+  const directUrl = extractImageResult(data);
   if (directUrl) {
     onProgress?.(100);
     return directUrl;

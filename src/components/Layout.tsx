@@ -7,6 +7,7 @@ import { RightPanel } from "./RightPanel";
 import { SimpleTimeline } from "./SimpleTimeline";
 import { Dashboard } from "./Dashboard";
 import { ProjectHeader } from "./ProjectHeader";
+import { WorkflowGuide } from "./WorkflowGuide";
 import { useMediaPanelStore } from "@/stores/media-panel-store";
 import {
   ResizablePanelGroup,
@@ -51,14 +52,17 @@ export function Layout() {
         <TabBar />
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
           <ProjectHeader />
-          {activeTab === "export" && <ExportView />}
-          {activeTab === "settings" && <SettingsPanel />}
-          {activeTab === "overview" && <OverviewPanel />}
-          {activeTab === "script" && <ScriptView />}
-          {activeTab === "characters" && <CharactersView />}
-          {activeTab === "scenes" && <ScenesView />}
-          {activeTab === "freedom" && <FreedomView />}
-          {activeTab === "assets" && <AssetsView />}
+          <WorkflowGuide />
+          <div className="flex-1 min-h-0 overflow-hidden">
+            {activeTab === "export" && <ExportView />}
+            {activeTab === "settings" && <SettingsPanel />}
+            {activeTab === "overview" && <OverviewPanel />}
+            {activeTab === "script" && <ScriptView />}
+            {activeTab === "characters" && <CharactersView />}
+            {activeTab === "scenes" && <ScenesView />}
+            {activeTab === "freedom" && <FreedomView />}
+            {activeTab === "assets" && <AssetsView />}
+          </div>
         </div>
       </div>
     );
@@ -104,6 +108,7 @@ export function Layout() {
       <div className="flex-1 min-w-0 flex flex-col">
         {/* Top: Project Header with save status */}
         <ProjectHeader />
+        <WorkflowGuide />
         
         {/* Main content with resizable panels */}
         <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0 min-w-0">
