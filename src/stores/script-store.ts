@@ -461,6 +461,7 @@ export const useScriptStore = create<ScriptStore>()(
             [projectId]: {
               ...state.projects[projectId],
               parseStatus: status,
+              taskError: status === 'parsing' ? undefined : state.projects[projectId].taskError,
               parseError: error,
               updatedAt: Date.now(),
             },
@@ -506,6 +507,7 @@ export const useScriptStore = create<ScriptStore>()(
             [projectId]: {
               ...state.projects[projectId],
               shotStatus: status,
+              taskError: status === 'generating' ? undefined : state.projects[projectId].taskError,
               shotError: error,
               updatedAt: Date.now(),
             },
@@ -1031,6 +1033,7 @@ export const useScriptStore = create<ScriptStore>()(
               ...state.projects,
               [projectId]: {
                 ...project,
+                taskError: Object.values(updates).some(value => ['importing', 'generating', 'calibrating', 'analyzing', 'processing'].includes(String(value))) ? undefined : project.taskError,
                 calibrationState: {
                   ...currentCalibration,
                   ...updates,
@@ -1061,6 +1064,7 @@ export const useScriptStore = create<ScriptStore>()(
               ...state.projects,
               [projectId]: {
                 ...project,
+                taskError: status === 'calibrating' ? undefined : project.taskError,
                 calibrationState: {
                   ...currentCalibration,
                   singleShotCalibrationStatus: {
