@@ -173,6 +173,7 @@ export async function processBatched<TItem, TResult>(
       onProgress?.(1, 1, '完成');
       return { results: result, failedBatches: 0, totalBatches: 1 };
     } catch (err) {
+      if (apiOptions?.signal?.aborted || (err as Error)?.name === 'AbortError') throw err;
       console.error('[BatchProcessor] 唯一批次失败:', err);
       onProgress?.(1, 1, '失败');
       return { results: new Map(), failedBatches: 1, totalBatches: 1 };

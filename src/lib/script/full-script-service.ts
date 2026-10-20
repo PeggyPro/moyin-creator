@@ -436,6 +436,8 @@ export async function generateEpisodeShots(
       episode.sceneIds.includes(s.id)
     );
     
+    if (episodeScenes.length === 0) throw new Error("该集没有可生成分镜的场景");
+
     // 构建场景内容用于分镜生成
     const scenesWithContent = episodeScenes.map((scene, idx) => {
       scriptRun.assertCurrent();
@@ -465,13 +467,15 @@ export async function generateEpisodeShots(
     );
     const allShots = [...existingShots, ...newShots];
     
-    commitGeneratedShots(projectId, project.shots, allShots);
+    // Keep generated shots in memory until all downstream analysis completes. If the
+    // episode content changes while analysis is running, no stale result is committed.
     
     // === AI 视角分析（分镜生成后自动执行）===
     let viewpointAnalyzed = false;
     let viewpointSkippedReason: string | undefined;
     let analysisExecuted = false;
     let viewpointCount = 0;
+    let pendingGeneratedScriptData: ScriptData | null = null;
     
     console.log('\n============================================');
     console.log('[generateEpisodeShots] === 开始 AI 视角分析 ===');
@@ -544,6 +548,7 @@ export async function generateEpisodeShots(
           
           console.log(`[generateEpisodeShots] 🔄 调用 analyzeSceneViewpoints for "${scene.location}"...`);
           const result = await scriptRun.wait(analyzeSceneViewpoints(scene, sceneShots, { ...viewpointOptions, signal: scriptRun.signal }));
+          if (!result.viewpoints?.length) throw new Error('AI 未返回有效场景视角，请重试');
           console.log(`[generateEpisodeShots] ✅ AI 分析完成，返回 ${result.viewpoints.length} 个视角:`, 
             result.viewpoints.map(v => v.name).join(', '));
           console.log(`[generateEpisodeShots] 📝 analysisNote: ${result.analysisNote}`);
@@ -662,10 +667,10 @@ export async function generateEpisodeShots(
           }
         });
         
-        commitGeneratedScriptData(projectId, scriptData, {
+        pendingGeneratedScriptData = {
           ...scriptData,
           scenes: updatedScenes,
-        });
+        };
         
         console.log('[generateEpisodeShots] ✅ AI 视角已保存到 store');
         console.log('[generateEpisodeShots] 总计 AI 分析视角数:', viewpointCount);
@@ -694,8 +699,20 @@ export async function generateEpisodeShots(
       }
     }
     
+    scriptRun.assertCurrent();
+    const latestEpisodeScript = useScriptStore.getState().projects[projectId]?.episodeRawScripts.find(
+      (ep) => ep.episodeIndex === episodeIndex
+    );
+    if (!latestEpisodeScript || latestEpisodeScript.rawContent !== episodeScript.rawContent) {
+      throw new Error('剧本内容已更新，已忽略旧分镜结果，请重试');
+    }
+    if (pendingGeneratedScriptData) {
+      commitGeneratedScriptData(projectId, scriptData, pendingGeneratedScriptData);
+    }
+    commitGeneratedShots(projectId, project.shots, allShots);
+
     store.updateEpisodeRawScript(projectId, episodeIndex, {
-      shotGenerationStatus: 'completed',
+      shotGenerationStatus: viewpointAnalyzed ? 'completed' : 'error',
       lastGeneratedAt: Date.now(),
     });
     
@@ -1067,6 +1084,7 @@ export function getEpisodeGenerationSummary(projectId: string): {
 
 // CalibrationOptions 已不需要，统一从服务映射获取配置
 export interface CalibrationOptions {
+  model?: string;
   signal?: AbortSignal;
   apiKey?: string;
   provider?: string;
@@ -1260,7 +1278,7 @@ ${characterBios.slice(0, 1000)}
       if (newTitle) {
         const current = useScriptStore.getState().projects[projectId];
         const currentRaw = current?.episodeRawScripts.find(item => item.episodeIndex === ep.episodeIndex);
-        if (!currentRaw || currentRaw.title !== ep.title) continue;
+        if (!currentRaw || currentRaw.rawContent !== ep.rawContent || currentRaw.title !== ep.title) continue;
         const title = `第${ep.episodeIndex}集：${newTitle}`;
         store.updateEpisodeRawScript(projectId, ep.episodeIndex, { title });
         const baseline = project.scriptData;

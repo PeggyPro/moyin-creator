@@ -36,6 +36,7 @@ export interface CharacterSearchResult {
 
 /** @deprecated 不再需要手动传递，自动从服务映射获取 */
 export interface FinderOptions {
+  signal?: AbortSignal;
   apiKey?: string;
   provider?: string;
   baseUrl?: string;
@@ -193,7 +194,8 @@ async function generateCharacterData(
   name: string,
   background: ProjectBackground,
   contexts: string[],
-  dialogueSamples: string[]
+  dialogueSamples: string[],
+  signal?: AbortSignal
 ): Promise<ScriptCharacter> {
   
   // 检测剧本类型：古装/未来/现代
@@ -372,7 +374,7 @@ ${dialogueSamples.join('\n')}
 
   try {
     // 统一从服务映射获取配置
-    const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt);
+    const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt, { signal });
     
     // 解析 JSON
     let cleaned = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
@@ -494,7 +496,8 @@ export async function findCharacterByDescription(
     name,
     background,
     searchResult.contexts,
-    searchResult.dialogueSamples
+    searchResult.dialogueSamples,
+    _options?.signal
   );
   
   // 计算置信度

@@ -36,7 +36,7 @@ export async function runScriptTask<T>(
   operation: (run: ScriptRun) => Promise<T>,
   parentSignal?: AbortSignal,
 ): Promise<T> {
-  if (key === 'import') cancelScriptTasks(projectId);
+  if (key === 'import' || key === 'structure') cancelScriptTasks(projectId);
   let projectRuns = runs.get(projectId);
   if (!projectRuns) runs.set(projectId, projectRuns = new Map());
   const category = key.split(':')[0];

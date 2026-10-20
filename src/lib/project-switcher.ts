@@ -37,7 +37,15 @@ import { useSClassStore } from '@/stores/sclass-store';
  * @param newProjectId - The project ID to switch to
  * @returns Promise that resolves when all stores have been rehydrated
  */
-export async function switchProject(newProjectId: string): Promise<void> {
+let pendingSwitch: Promise<void> = Promise.resolve();
+
+export function switchProject(newProjectId: string): Promise<void> {
+  const next = pendingSwitch.then(() => switchProjectNow(newProjectId));
+  pendingSwitch = next.catch(() => {});
+  return next;
+}
+
+async function switchProjectNow(newProjectId: string): Promise<void> {
   const currentId = useProjectStore.getState().activeProjectId;
   
   // No-op if same project

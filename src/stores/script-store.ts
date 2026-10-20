@@ -184,6 +184,8 @@ const defaultProjectData = (): ScriptProjectData => ({
 });
 
 const pendingCharacterRecoveryProjectIds = new Set<string>();
+// An eager ensureProject during hydration must not persist an empty placeholder.
+const untouchedProjectPlaceholders = new WeakSet<ScriptProjectData>();
 
 const cloneScriptCharacters = (characters: ScriptCharacter[] | undefined): ScriptCharacter[] => {
   if (!Array.isArray(characters) || characters.length === 0) {
@@ -332,9 +334,9 @@ export const useScriptStore = create<ScriptStore>()(
       ensureProject: (projectId) => {
         const { projects } = get();
         if (projects[projectId]) return;
-        set({
-          projects: { ...projects, [projectId]: defaultProjectData() },
-        });
+        const project = defaultProjectData();
+        untouchedProjectPlaceholders.add(project);
+        set({ projects: { ...projects, [projectId]: project } });
       },
 
       setRawScript: (projectId, rawScript) => {
@@ -1160,7 +1162,9 @@ export const useScriptStore = create<ScriptStore>()(
     {
       name: "moyin-script-store",
       storage: createJSONStorage(() => createProjectMapStorage('script')),
-      partialize: (state) => ({ activeProjectId: state.activeProjectId, projects: state.projects }),
+      partialize: (state) => ({ activeProjectId: state.activeProjectId,
+        projects: Object.fromEntries(Object.entries(state.projects).filter(([, project]) => !untouchedProjectPlaceholders.has(project as ScriptProjectData))),
+      }),
       merge: (persisted: any, current: any) => {
         if (!persisted) return current;
         
@@ -1173,7 +1177,9 @@ export const useScriptStore = create<ScriptStore>()(
           return {
             ...current,
             ...persisted,
-            projects: { ...normalizedProjects, ...current.projects },
+            projects: { ...normalizedProjects, ...Object.fromEntries(
+              Object.entries(current.projects).filter(([, project]) => !untouchedProjectPlaceholders.has(project as ScriptProjectData)),
+            ) },
           };
         }
         
@@ -1184,7 +1190,7 @@ export const useScriptStore = create<ScriptStore>()(
         return {
           ...current,
           activeProjectId: pid,
-          projects: { ...current.projects, [pid]: normalizeScriptProjectData(pid, current.projects[pid] || projectData) },
+          projects: { ...current.projects, [pid]: normalizeScriptProjectData(pid, current.projects[pid] && !untouchedProjectPlaceholders.has(current.projects[pid]) ? current.projects[pid] : projectData) },
         };
       },
       onRehydrateStorage: () => (state, error) => {

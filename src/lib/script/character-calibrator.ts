@@ -24,6 +24,7 @@ import { buildSeriesContextSummary } from './series-meta-sync';
 // ==================== 类型定义 ====================
 
 export interface CharacterCalibrationResult {
+  incomplete?: boolean;
   /** 校准后的角色列表 */
   characters: CalibratedCharacter[];
   /** 被过滤的词（非角色） */
@@ -84,6 +85,7 @@ export interface MergeRecord {
 }
 
 export interface CalibrationOptions {
+  signal?: AbortSignal;
   /** 上次校准的角色列表，用于合并确保角色不丢失 */
   previousCharacters?: CalibratedCharacter[];
   /** 提示词语言选项 */
@@ -431,6 +433,7 @@ ${strictness !== 'strict' ? `【极其重要 - 宽松筛选原则】
   const biosContext = safeTruncate(background.characterBios || '', 1000);
 
   // === 第一步：AI 角色分析（自动分批）===
+  let incomplete = false;
   let parsed: any;
   try {
     console.log('[CharacterCalibrator] 开始 AI 角色分析...');
@@ -578,11 +581,13 @@ ${batchDialogues.slice(0, 100).join('\n')}
       ),
       estimateItemOutputTokens: () => 200,
       apiOptions: {
+        signal: options?.signal,
         temperature: 0,
         maxTokens: 16384,
       },
     });
     
+    incomplete = failedBatches > 0 || charResults.size === 0;
     if (failedBatches > 0) {
       console.warn(`[CharacterCalibrator] ${failedBatches} 批次失败，使用部分结果`);
     }
@@ -602,6 +607,7 @@ ${batchDialogues.slice(0, 100).join('\n')}
     console.error('[CharacterCalibrator] 错误堆栈:', err.stack);
     // 返回原始数据作为降级方案，但带上统计信息
     return {
+      incomplete: true,
       characters: rawCharacters.map((c, i) => {
         const s = stats.get(c.name);
         return {
@@ -642,7 +648,7 @@ ${batchDialogues.slice(0, 100).join('\n')}
       characters,
       background,
       episodeScripts,
-      promptLanguage
+      promptLanguage, options?.signal, () => { incomplete = true; }
     );
     console.log('[CharacterCalibrator] 视觉提示词生成完成');
   } catch (enrichError) {
@@ -708,6 +714,7 @@ ${batchDialogues.slice(0, 100).join('\n')}
   }
   
   return {
+    incomplete,
     characters: finalCharacters,
     filteredWords: parsed.filteredWords || [],
     filteredCharacters,
@@ -894,7 +901,8 @@ async function enrichCharactersWithVisualPrompts(
   characters: CalibratedCharacter[],
   background: ProjectBackground,
   episodeScripts: EpisodeRawScript[],
-  promptLanguage: PromptLanguage = 'zh+en'
+  promptLanguage: PromptLanguage = 'zh+en',
+  signal?: AbortSignal, onIncomplete?: () => void,
 ): Promise<CalibratedCharacter[]> {
   // 只为主角和重要配角生成详细提示词
   const keyCharacters = characters.filter(c => 
@@ -1166,6 +1174,7 @@ ${c.name}（${c.importance === 'protagonist' ? '主角' : '重要配角'}）
     
     try {
       const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt, {
+        signal,
         maxTokens: 4096, // 单角色输出 4096 足够
       });
       
@@ -1186,6 +1195,8 @@ ${c.name}（${c.importance === 'protagonist' ? '主角' : '重要配角'}）
       }
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
+      onIncomplete?.();
+      if (signal?.aborted) throw error;
       console.warn(`[enrichCharactersWithVisualPrompts] ⚠️ ${c.name} 生成失败（不影响其他角色）:`, err.message);
       // 单个角色失败不影响整体，继续处理下一个
     }

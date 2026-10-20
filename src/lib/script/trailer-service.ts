@@ -25,6 +25,7 @@ const DURATION_TO_SHOT_COUNT: Record<TrailerDuration, number> = {
 
 /** @deprecated 不再需要手动传递，自动从服务映射获取 */
 export interface TrailerGenerationOptions {
+  signal?: AbortSignal;
   apiKey?: string;
   provider?: string;
   baseUrl?: string;
@@ -124,7 +125,7 @@ ${shotSummaries.map(s =>
 请从以上分镜中挑选 ${targetCount} 个最适合做预告片的镜头，返回 JSON 格式的序号列表。`;
 
     // 统一从服务映射获取配置
-    const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt);
+    const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt, { signal: _options?.signal });
 
     // 解析 AI 返回的 JSON - 支持多种格式
     let selectedIndices: number[] = [];

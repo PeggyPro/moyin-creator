@@ -24,6 +24,7 @@ import { buildSeriesContextSummary } from './series-meta-sync';
 // ==================== 类型定义 ====================
 
 export interface SceneCalibrationResult {
+  incomplete?: boolean;
   /** 校准后的场景列表 */
   scenes: CalibratedScene[];
   /** 被合并的场景记录 */
@@ -94,6 +95,7 @@ export interface SceneStats {
 
 /** @deprecated 不再需要手动传递，自动从服务映射获取 */
 export interface CalibrationOptions {
+  signal?: AbortSignal;
   apiKey?: string;
   provider?: string;
   baseUrl?: string;
@@ -444,12 +446,14 @@ ${sceneList}
         item.actionSamples.join(' ') + ' ' + item.dialogueSamples.join(' ')
       ),
       estimateItemOutputTokens: () => 300,
+      apiOptions: { signal: _options?.signal },
     });
     
     if (failedBatches > 0) {
       console.warn(`[SceneCalibrator] ${failedBatches} 批次失败，使用部分结果`);
     }
     
+    let incomplete = failedBatches > 0 || sceneResults.size === 0;
     console.log('[calibrateScenes] AI 返回', sceneResults.size, '个场景结果');
     
     // 【关键】按原始顺序遍历 currentScenes，只更新美术字段
@@ -459,6 +463,7 @@ ${sceneList}
       if (!aiData) aiData = sceneResults.get('loc:' + normalizeLocation(orig.name || ''));
       
       const matched = !!aiData;
+      if (!matched) incomplete = true;
       console.log(`[calibrateScenes] 场景 #${i + 1} "${orig.name || orig.location}" (${orig.id}) -> AI 匹配: ${matched ? '✓' : '✗'}`);
       
       return {
@@ -484,10 +489,11 @@ ${sceneList}
     const enrichedScenes = await enrichScenesWithVisualPrompts(
       scenes,
       background,
-      _options?.promptLanguage || 'zh+en'
+      _options?.promptLanguage || 'zh+en', _options?.signal, () => { incomplete = true; }
     );
     
     return {
+      incomplete,
       scenes: enrichedScenes,
       mergeRecords: allMergeRecords,
       analysisNotes: allAnalysisNotes.join('; ') || '',
@@ -510,6 +516,7 @@ ${sceneList}
       }));
     
     return {
+      incomplete: true,
       scenes: fallbackScenes,
       mergeRecords: [],
       analysisNotes: 'AI校准失败，返回基于统计的结果',
@@ -548,7 +555,8 @@ export async function calibrateEpisodeScenes(
 async function enrichScenesWithVisualPrompts(
   scenes: CalibratedScene[],
   background: ProjectBackground,
-  promptLanguage: PromptLanguage = 'zh+en'
+  promptLanguage: PromptLanguage = 'zh+en',
+  signal?: AbortSignal, onIncomplete?: () => void,
 ): Promise<CalibratedScene[]> {
   // 只为主要场景和次要场景生成详细提示词
   const keyScenes = scenes.filter(s => 
@@ -604,7 +612,7 @@ ${promptLanguage !== 'zh' ? '- 英文视觉提示词（50-80词，适合AI图像
 
   try {
     // 统一从服务映射获取配置
-    const result = await callFeatureAPI('script_analysis', systemPrompt, '请为以上场景生成专业视觉提示词');
+    const result = await callFeatureAPI('script_analysis', systemPrompt, '请为以上场景生成专业视觉提示词', { signal });
     
     // 解析结果
     let cleaned = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
@@ -633,6 +641,8 @@ ${promptLanguage !== 'zh' ? '- 英文视觉提示词（50-80词，适合AI图像
       return s;
     });
   } catch (error) {
+    onIncomplete?.();
+    if (signal?.aborted) throw error;
     console.error('[enrichScenesWithVisualPrompts] 生成失败:', error);
     return scenes;
   }

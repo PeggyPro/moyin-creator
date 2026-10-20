@@ -31,7 +31,7 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 
 let win: BrowserWindow | null
 
-registerApiFetchHandlers(ipcMain, (input, init) => net.fetch(String(input), init))
+registerApiFetchHandlers(ipcMain, (input, init) => fetch(String(input), init))
 
 type PackageUpdateConfig = {
   manifestUrl?: string

@@ -55,7 +55,8 @@ export async function analyzeCharacterStages(
   background: ProjectBackground,
   characters: ScriptCharacter[],
   totalEpisodes: number,
-  promptLanguage: PromptLanguage = 'zh+en'
+  promptLanguage: PromptLanguage = 'zh+en',
+  signal?: AbortSignal
 ): Promise<CharacterStageAnalysis[]> {
   
   // 只分析主要角色（前3个或有详细描述的）
@@ -144,7 +145,7 @@ ${promptLanguage !== 'en' ? '          "visualPromptZh": "35-40岁中国男性�
 
   try {
     // 统一从服务映射获取配置
-    const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt);
+    const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt, { signal });
     
     // 解析JSON结果
     let cleaned = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
@@ -157,6 +158,7 @@ ${promptLanguage !== 'en' ? '          "visualPromptZh": "35-40岁中国男性�
     const parsed = JSON.parse(cleaned);
     return parsed.analyses || [];
   } catch (error) {
+    if (signal?.aborted || (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name))) throw error;
     console.error('[CharacterStageAnalyzer] AI分析失败:', error);
     return [];
   }

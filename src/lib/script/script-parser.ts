@@ -586,11 +586,12 @@ export async function generateShotList(
   onShotsGenerated?: (newShots: Shot[], sceneIndex: number) => void // 流式回调，每个场景完成后立即通知
 ): Promise<Shot[]> {
   if (!scriptData.scenes || scriptData.scenes.length === 0) {
-    return [];
+    throw new Error('剧本没有可生成分镜的场景');
   }
 
   const lang = options.language || scriptData.language || '中文';
   const allShots: Shot[] = [];
+  let failedScenes = 0;
   
   // 计算每个场景应该生成的分镜数
   const totalScenes = scriptData.scenes.length;
@@ -621,7 +622,8 @@ export async function generateShotList(
   // Determine concurrency based on available keys
   const keyManager = options.keyManager || new ApiKeyManager(options.apiKey, true);
   const keyCount = keyManager.getTotalKeyCount();
-  const concurrency = options.concurrency || Math.max(1, Math.min(keyCount, 4)); // Max 4 parallel
+  const requestedConcurrency = options.concurrency ?? Math.max(1, Math.min(keyCount, 4));
+  const concurrency = Number.isFinite(requestedConcurrency) ? Math.max(1, Math.floor(requestedConcurrency)) : 1;
   
   console.log(`[generateShotList] Processing ${totalScenes} scenes with concurrency ${concurrency} (${keyCount} keys)`);
 
@@ -684,6 +686,7 @@ ${scriptData.characters.map(c => `- ${c.name}: ${c.personality || ''} ${c.appear
 
       // Validate and transform shots - FORCE TRUNCATE to shotsPerScene
       let validShots = Array.isArray(shots) ? shots : [];
+      if (validShots.length === 0) throw new Error('AI 未返回有效分镜');
       
       // 强制截取到每场景限制数量（AI可能返回更多）
       if (shotsPerScene && validShots.length > shotsPerScene) {
@@ -748,6 +751,8 @@ ${scriptData.characters.map(c => `- ${c.name}: ${c.personality || ''} ${c.appear
         onShotsGenerated(sceneShots, sceneIndex);
       }
     } catch (e) {
+      if (options.signal?.aborted || (e as Error)?.name === 'AbortError') throw e;
+      failedScenes++;
       console.error(`[generateShotList] Failed for scene ${sceneIndex + 1}:`, e);
     }
     
@@ -820,6 +825,7 @@ ${scriptData.characters.map(c => `- ${c.name}: ${c.personality || ''} ${c.appear
     }));
   }
 
+  if (failedScenes > 0) throw new Error(`${failedScenes} 个场景分镜生成失败，已保留成功结果，请重试`);
   return finalShots;
 }
 

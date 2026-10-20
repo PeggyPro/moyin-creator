@@ -36,6 +36,7 @@ export interface SceneSearchResult {
 
 /** @deprecated 不再需要手动传递，自动从服务映射获取 */
 export interface SceneFinderOptions {
+  signal?: AbortSignal;
   apiKey?: string;
   provider?: string;
   baseUrl?: string;
@@ -167,7 +168,8 @@ async function generateSceneData(
   name: string,
   background: ProjectBackground,
   contexts: string[],
-  matchedScenes: { episodeIndex: number; scene: SceneRawContent }[]
+  matchedScenes: { episodeIndex: number; scene: SceneRawContent }[],
+  signal?: AbortSignal
 ): Promise<ScriptScene> {
   
   // 从匹配的场景中提取信息
@@ -222,7 +224,7 @@ ${contexts.slice(0, 3).join('\n\n')}
 
   try {
     // 统一从服务映射获取配置
-    const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt);
+    const result = await callFeatureAPI('script_analysis', systemPrompt, userPrompt, { signal });
     
     // 解析 JSON
     let cleaned = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
@@ -357,7 +359,8 @@ export async function findSceneByDescription(
     name,
     background,
     searchResult.contexts,
-    searchResult.matchedScenes
+    searchResult.matchedScenes,
+    _options?.signal
   );
   
   // 计算置信度

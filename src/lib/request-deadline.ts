@@ -11,13 +11,13 @@ export async function withRequestDeadline<T>(
   const timer = setTimeout(() => controller.abort(new DOMException('AI 请求超时，请重试', 'TimeoutError')), timeoutMs);
   let rejectAbort: () => void = () => {};
   try {
+    options.signal?.addEventListener('abort', abort, { once: true });
+    if (options.signal?.aborted) abort();
+    if (controller.signal.aborted) throw controller.signal.reason;
     const cancelled = new Promise<never>((_, reject) => {
       rejectAbort = () => reject(controller.signal.reason);
       controller.signal.addEventListener('abort', rejectAbort, { once: true });
     });
-    options.signal?.addEventListener('abort', abort, { once: true });
-    if (options.signal?.aborted) abort();
-    if (controller.signal.aborted) throw controller.signal.reason;
     return await Promise.race([operation(controller.signal), cancelled]);
   } finally {
     clearTimeout(timer);

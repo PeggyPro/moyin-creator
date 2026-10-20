@@ -12,7 +12,7 @@ export function mergeGeneratedFields<T extends object>(current: T, baseline: T, 
   return merged;
 }
 
-export function mergeGeneratedEntities<T extends { id: string | number }>(current: T[], baseline: T[], generated: T[]): T[] {
+export function mergeGeneratedEntities<T extends { id: string | number }>(current: T[] = [], baseline: T[] = [], generated: T[] = []): T[] {
   const originals = new Map(baseline.map(item => [item.id, item]));
   const results = new Map(generated.map(item => [item.id, item]));
   const merged: T[] = [];
@@ -22,7 +22,7 @@ export function mergeGeneratedEntities<T extends { id: string | number }>(curren
     // A concurrent deletion/addition/edit always wins over an older AI snapshot.
     if (!before) merged.push(item);
     else if (after) merged.push(mergeGeneratedFields(item, before, after));
-    else if (!equal(item, before)) merged.push(item);
+    else merged.push(item);
   }
   for (const item of generated) {
     if (!originals.has(item.id) && !current.some(existing => existing.id === item.id)) merged.push(item);
@@ -35,10 +35,17 @@ export function commitGeneratedScriptData(projectId: string, baseline: ScriptDat
   const current = store.projects[projectId]?.scriptData;
   if (!current) throw new Error('剧本已被移除，已忽略旧任务结果');
   const merged = mergeGeneratedFields(current, baseline, generated);
+  const scenes = mergeGeneratedEntities(current.scenes, baseline.scenes, generated.scenes).map(scene => {
+    const before = baseline.scenes.find(item => item.id === scene.id);
+    const after = generated.scenes.find(item => item.id === scene.id);
+    const latest = current.scenes.find(item => item.id === scene.id);
+    if (!before || !after || !latest || (!before.viewpoints && !after.viewpoints && !latest.viewpoints)) return scene;
+    return { ...scene, viewpoints: mergeGeneratedEntities(latest.viewpoints, before.viewpoints, after.viewpoints) };
+  });
   store.setScriptData(projectId, {
     ...merged,
     characters: mergeGeneratedEntities(current.characters, baseline.characters, generated.characters),
-    scenes: mergeGeneratedEntities(current.scenes, baseline.scenes, generated.scenes),
+    scenes,
     episodes: mergeGeneratedEntities(current.episodes, baseline.episodes, generated.episodes),
     storyParagraphs: mergeGeneratedEntities(current.storyParagraphs, baseline.storyParagraphs, generated.storyParagraphs),
   });
