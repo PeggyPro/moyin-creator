@@ -1,7 +1,17 @@
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const electronBuilderCli = require.resolve('electron-builder/cli.js');
+const nodeRuntime = process.platform === 'win32'
+  ? (process.env.PATH ?? '')
+      .split(';')
+      .map((directory) => resolve(directory, 'node.exe'))
+      .find((candidate) => existsSync(candidate)) ?? process.execPath
+  : process.execPath;
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
@@ -51,16 +61,13 @@ const env = {
   ELECTRON_BUILDER_CACHE: electronBuilderCacheDir,
 };
 
-function run(command, args) {
-  const result = spawnSync(
-    process.platform === 'win32' ? 'cmd.exe' : command,
-    process.platform === 'win32' ? ['/d', '/s', '/c', [command, ...args].join(' ')] : args,
-    {
-      cwd: projectRoot,
-      env,
-      stdio: 'inherit',
-    },
-  );
+function run(command, args, { shell = process.platform === 'win32' } = {}) {
+  const result = spawnSync(command, args, {
+    cwd: projectRoot,
+    env,
+    stdio: 'inherit',
+    shell,
+  });
 
   if (result.error) {
     throw result.error;
@@ -165,7 +172,7 @@ function buildForArch(arch) {
   const stagingBuildOutputDir = resolveStagingBuildOutputDir(arch);
   const finalBuildOutputDir = resolveFinalBuildOutputDir(arch);
 
-  run('npx', ['electron-builder', ...resolveBuilderArgs(arch), `-c.directories.output=${stagingBuildOutputDir}`]);
+  run(nodeRuntime, [electronBuilderCli, ...resolveBuilderArgs(arch), `-c.directories.output=${stagingBuildOutputDir}`], { shell: false });
   finalizeBuildOutput(stagingBuildOutputDir, finalBuildOutputDir);
 }
 
